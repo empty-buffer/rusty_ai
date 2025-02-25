@@ -11,6 +11,8 @@ unsafe_code = "forbid"
 # -- Async
 tokio = { version = "1", features = ["full"] }
 
+inquire = "0.7.5"
+
 # -- Json
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,7 +22,7 @@ serde_with = { version = "3", features = ["macros"] }
 # schemars = {version = "0.8"}
 
 # -- Others
-derive_more = {version = "1.0.0-beta", features = ["from"] }
+derive_more = { version = "1.0.0-beta", features = ["from"] }
 
 # -- Terminal
 genai = "0.1.21"

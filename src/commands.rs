@@ -1,7 +1,11 @@
 use crate::chat::ChatContext;
 use crate::Result;
+use std::fmt::{self, write};
 use std::io::{self, Write};
 
+use inquire::Select;
+
+#[derive(Clone)]
 pub(super) enum Command {
     ListFiles,
     LoadFile,
@@ -9,18 +13,34 @@ pub(super) enum Command {
     AskQuestion,
     ShowHistory,
     Exit,
-    Invalid,
+    Back,
+    ParentDir,
 }
 
-pub(super) fn parse_command(input: &str) -> Command {
-    match input.trim() {
-        "1" => Command::ListFiles,
-        "2" => Command::LoadFile,
-        "3" => Command::ChangeDirectory,
-        "4" => Command::AskQuestion,
-        "5" => Command::ShowHistory,
-        "0" => Command::Exit,
-        _ => Command::Invalid,
+// pub(super) fn parse_command(input: &str) -> Command {
+//     match input.trim() {
+//         "1" => Command::ListFiles,
+//         "2" => Command::LoadFile,
+//         "3" => Command::ChangeDirectory,
+//         "4" => Command::AskQuestion,
+//         "5" => Command::ShowHistory,
+//         "0" => Command::Exit,
+//         _ => Command::Invalid,
+//     }
+// }
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::ListFiles => write!(f, "List Files"),
+            Command::LoadFile => write!(f, "Load File"),
+            Command::ChangeDirectory => write!(f, "Change Directory"),
+            Command::AskQuestion => write!(f, "Ask Question"),
+            Command::ShowHistory => write!(f, "Show History"),
+            Command::Exit => write!(f, "Exit"),
+            Command::Back => write!(f, "Back"),
+            Command::ParentDir => write!(f, "../"),
+        }
     }
 }
 
@@ -35,51 +55,100 @@ pub(super) async fn execute_command(
         Command::AskQuestion => handle_ask_question(chat_context).await?,
         Command::ShowHistory => handle_show_history(chat_context).await?,
         Command::Exit => return Err(crate::error::Error::Exit),
-        Command::Invalid => println!("Invalid command!"),
+        _ => println!("Invalid command!"),
     }
     Ok(())
 }
 
 pub(super) async fn handle_list_files(chat_context: &mut ChatContext) -> Result<()> {
-    println!("\nAvailable files:");
+    println!("Available files:");
     let (files, dirs) = chat_context.files()?;
 
-    println!("\ndirs");
+    println!("\nDirs");
     for dir in &dirs {
         println!("- {}", dir);
     }
 
-    println!("\nfiles");
+    println!("\nFiles");
     for file in &files {
         println!("- {}", file);
     }
+
+    println!("\n");
 
     Ok(())
 }
 
 pub(super) async fn handle_load_file(chat_context: &mut ChatContext) -> Result<()> {
-    print!("Enter filename to load: ");
-    io::stdout().flush()?;
-    let mut filename = String::new();
-    io::stdin().read_line(&mut filename)?;
-    match chat_context.load_context_from_file(filename.trim()) {
-        Ok(_) => println!("File loaded successfully!"),
-        Err(e) => println!("Error loading file: {}", e),
+    let mut opts = Vec::new();
+
+    let (files, _) = chat_context.files()?;
+
+    for file in files {
+        opts.push(file);
     }
 
-    Ok(())
+    opts.push(Command::Back.to_string());
+
+    let ans = Select::new("What files we should load?", opts.clone())
+        .prompt()
+        .map_err(|e| {
+            println!("Error while selection an option {}", e);
+            e
+        })?;
+
+    match ans.as_str() {
+        "Back" => Ok(()),
+        _ => match chat_context.load_context_from_file(&ans) {
+            Ok(_) => {
+                println!("File loaded successfully!");
+                Ok(())
+            }
+            Err(e) => {
+                println!("Error loading file: {}", e);
+                Ok(())
+            }
+        },
+    }
 }
 
 pub(super) async fn handle_change_directory(chat_context: &mut ChatContext) -> Result<()> {
-    print!("Enter directory name (or .. for parent): ");
-    io::stdout().flush()?;
-    let mut dirname = String::new();
-    io::stdin().read_line(&mut dirname)?;
-    match chat_context.set_new_dir(dirname.trim()) {
-        Ok(_) => println!("Changed directory successfully!"),
-        Err(e) => println!("Error changing directory: {}", e),
+    let mut opts = Vec::new();
+
+    let (_, dirs) = chat_context.files()?;
+    opts.push(Command::ParentDir.to_string());
+    for dirname in dirs {
+        opts.push(dirname);
     }
-    Ok(())
+
+    opts.push(Command::Back.to_string());
+
+    let ans = Select::new("Please select directory", opts.clone())
+        .prompt()
+        .map_err(|e| {
+            println!("Error while selection an option {}", e);
+            e
+        })?;
+
+    match ans.as_str() {
+        "Back" => Ok(()),
+        _ => match chat_context.set_new_dir(&ans) {
+            Ok(_) => {
+                println!("Changed directory successfully!");
+                Ok(())
+            }
+            Err(e) => {
+                println!("Error changing directory: {}", e);
+                Ok(())
+            }
+        },
+    }
+
+    // match chat_context.set_new_dir(ans.as_str()) {
+    //     Ok(_) => println!("Changed directory successfully!"),
+    //     Err(e) => println!("Error changing directory: {}", e),
+    // }
+    // Ok(())
 }
 
 pub(super) async fn handle_ask_question(chat_context: &mut ChatContext) -> Result<()> {

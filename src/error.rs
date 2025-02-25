@@ -13,6 +13,9 @@ pub enum Error {
 
     #[from]
     Json(serde_json::Error),
+
+    #[from]
+    InquireError(inquire::InquireError),
 }
 
 impl From<&str> for Error {
