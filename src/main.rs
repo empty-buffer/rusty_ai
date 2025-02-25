@@ -35,10 +35,19 @@ F\\\\
 EMPTY
 R////
 
+    
+!EMPTY
+ BUFFER!
+
+
 BUFFER
 \\\\M\
 ////P/
 \\\\T\
 ////E/ 
 
+    E
+    M
+    P
+BUFFER
 */
