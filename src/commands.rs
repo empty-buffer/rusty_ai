@@ -6,6 +6,26 @@ use std::io::{self, Write};
 use inquire::Select;
 
 #[derive(Clone)]
+pub(super) enum Navigation {
+    ParentDir,
+    Done,
+    Back,
+    Exit
+}
+
+
+impl fmt::Display for Navigation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Navigation::Done => write!(f, "Done"),
+            Navigation::ParentDir => write!(f, "../"),
+            Navigation::Back => write!(f, "Back"),
+            Navigation::Exit => write!(f, "Exit"),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(super) enum Command {
     ListFiles,
     LoadFile,
@@ -14,7 +34,6 @@ pub(super) enum Command {
     ShowHistory,
     Exit,
     Back,
-    ParentDir,
 }
 
 // pub(super) fn parse_command(input: &str) -> Command {
@@ -39,7 +58,6 @@ impl fmt::Display for Command {
             Command::ShowHistory => write!(f, "Show History"),
             Command::Exit => write!(f, "Exit"),
             Command::Back => write!(f, "Back"),
-            Command::ParentDir => write!(f, "../"),
         }
     }
 }
@@ -115,40 +133,39 @@ pub(super) async fn handle_load_file(chat_context: &mut ChatContext) -> Result<(
 pub(super) async fn handle_change_directory(chat_context: &mut ChatContext) -> Result<()> {
     let mut opts = Vec::new();
 
-    let (_, dirs) = chat_context.files()?;
-    opts.push(Command::ParentDir.to_string());
-    for dirname in dirs {
-        opts.push(dirname);
+    loop{
+        opts.clear();
+    
+    
+        let (_, dirs) = chat_context.files()?;
+        opts.push(Navigation::ParentDir.to_string());
+        for dirname in dirs {
+            opts.push(dirname);
+        }
+
+        opts.push(Navigation::Done.to_string());
+
+        let ans = Select::new("Please select directory", opts.clone())
+            .prompt()
+            .map_err(|e| {
+                println!("Error while selection an option {}", e);
+                e
+            })?;
+
+        match ans.as_str() {
+            "Done" => return Ok(()),
+            _ => match chat_context.set_new_dir(&ans) {
+                Ok(_) => {
+                    println!("Changed directory successfully!");
+                }
+            
+                Err(e) => {
+                    println!("Error changing directory: {}", e);
+                   return  Ok(())
+                }
+            },
+        }
     }
-
-    opts.push(Command::Back.to_string());
-
-    let ans = Select::new("Please select directory", opts.clone())
-        .prompt()
-        .map_err(|e| {
-            println!("Error while selection an option {}", e);
-            e
-        })?;
-
-    match ans.as_str() {
-        "Back" => Ok(()),
-        _ => match chat_context.set_new_dir(&ans) {
-            Ok(_) => {
-                println!("Changed directory successfully!");
-                Ok(())
-            }
-            Err(e) => {
-                println!("Error changing directory: {}", e);
-                Ok(())
-            }
-        },
-    }
-
-    // match chat_context.set_new_dir(ans.as_str()) {
-    //     Ok(_) => println!("Changed directory successfully!"),
-    //     Err(e) => println!("Error changing directory: {}", e),
-    // }
-    // Ok(())
 }
 
 pub(super) async fn handle_ask_question(chat_context: &mut ChatContext) -> Result<()> {
