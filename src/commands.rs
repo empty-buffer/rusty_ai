@@ -130,6 +130,11 @@ pub(super) async fn handle_load_file(chat_context: &mut ChatContext) -> Result<(
     }
 }
 
+
+async fn navigate_dir() -> Result<()>{
+    todo!()
+}
+
 pub(super) async fn handle_change_directory(chat_context: &mut ChatContext) -> Result<()> {
     let mut opts = Vec::new();
 
