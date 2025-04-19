@@ -1,8 +1,10 @@
 use crate::chat::ChatContext;
 use crate::Result;
 use std::fmt::{self, write};
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 
+use genai::resolver;
 use inquire::Select;
 
 #[derive(Clone)]
@@ -30,6 +32,7 @@ pub(super) enum Command {
     ListFiles,
     LoadFile,
     ChangeDirectory,
+    ChangeModel,
     AskQuestion,
     ShowHistory,
     Exit,
@@ -54,6 +57,7 @@ impl fmt::Display for Command {
             Command::ListFiles => write!(f, "List Files"),
             Command::LoadFile => write!(f, "Load File"),
             Command::ChangeDirectory => write!(f, "Change Directory"),
+            Command::ChangeModel => write!(f, "change model"),
             Command::AskQuestion => write!(f, "Ask Question"),
             Command::ShowHistory => write!(f, "Show History"),
             Command::Exit => write!(f, "Exit"),
@@ -177,7 +181,8 @@ pub(super) async fn handle_ask_question(chat_context: &mut ChatContext) -> Resul
 
     let context = chat_context.add_conv_context(&question);
     let response = chat_context.send_to_api(&context).await?;
-    chat_context.save_response(question, response.clone());
+    chat_context.save_response(question.clone(), response.clone());
+    chat_context.history_file.add(&question, &response)?;
     println!("\nResponse: {}", response);
 
     Ok(())
@@ -200,3 +205,25 @@ pub(super) fn read_input(prompt: &str) -> Result<String> {
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
 }
+
+// struct History {
+//     root: String,
+//     file_path: String
+// }
+
+// impl History {
+//     fn new(file_path: &str) -> Self {
+//         Self { root: "./".to_owned(), file_path: "./.rusty/history.md".to_owned()}
+//     }
+
+//     fn add(&self, context: &str) -> Result<()>{
+//         let mut file = OpenOptions::new()
+//         .create(true)
+//     .append(true)
+//     .open(&self.file_path)?;
+
+//     writeln!(file, "{}", context)?;
+
+//     Ok(())
+//     }
+// }

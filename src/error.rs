@@ -14,6 +14,8 @@ pub enum Error {
     #[from]
     Json(serde_json::Error),
 
+    // #[from]c
+    // History(crate::chat::history)
     #[from]
     InquireError(inquire::InquireError),
 }
