@@ -1,40 +1,115 @@
-mod chat;
+// mod chat;
+mod editor;
 mod error;
-mod files;
-use std::io::{self, Write};
-mod commands;
+mod render;
+
+// mod files;
+// use std::io::{self, Write};
+// mod commands;
 use error::Result;
 
-use inquire::Select;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::io::{self, stdout};
+use std::time::{Duration, Instant};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut chat_context = chat::ChatContext::new()?;
+fn main() -> Result<()> {
+    // Process command-line arguments
+    // let args: Vec<String> = env::args().collect();
 
-    let options = vec![
-        commands::Command::ListFiles,
-        commands::Command::LoadFile,
-        commands::Command::ChangeDirectory,
-        commands::Command::AskQuestion,
-        commands::Command::ShowHistory,
-        commands::Command::Exit,
-    ];
+    // Setup terminal
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
 
-    print!("\x1B[2J\x1B[1;1H");
-    io::stdout().flush().unwrap();
+    // Create an editor instance
+    let mut editor = editor::Editor::new();
+
+    if let Err(e) = editor.open_file(".rusty/history.md") {
+        // Handle file opening error (you might want to show this to the user)
+        eprintln!("Error opening file: {}", e);
+    }
+
+    // Run editor
+    let mut render_state = render::RenderState::new()?;
+
+    // Run editor
+    let result = run_editor(&mut editor, &mut render_state);
+
+    // Restore terminal
+    disable_raw_mode()?;
+    execute!(stdout(), LeaveAlternateScreen)?;
+
+    // Return any error that occurred
+    result
+}
+
+fn run_editor(editor: &mut editor::Editor, render_state: &mut render::RenderState) -> Result<()> {
+    let frame_duration = Duration::from_millis(16); // ~60 FPS
+    let mut last_render = Instant::now();
 
     loop {
-        let ans = Select::new("What would you like to do?", options.clone())
-            .with_help_message("Use ↑↓ arrows to navigate, enter to select")
-            .prompt()
-            .map_err(|e| {
-                println!("Error while selection an option {}", e);
-                e
-            })?;
+        // Render the screen at controlled intervals
+        let now = Instant::now();
+        if now.duration_since(last_render) >= frame_duration {
+            render::draw_screen(editor, render_state)?;
+            last_render = now;
+        }
 
-        commands::execute_command(ans, &mut chat_context).await?;
+        // Handle user input with a timeout to maintain smooth rendering
+        if crossterm::event::poll(Duration::from_millis(1))? {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
+                // Check for Ctrl+Q to quit
+                if code == KeyCode::Char('q') && modifiers.contains(KeyModifiers::CONTROL) {
+                    break;
+                }
+
+                // Handle the key in the editor
+                let should_quit = editor.handle_key(code)?;
+                if should_quit {
+                    break;
+                }
+            }
+        }
     }
+    Ok(())
 }
+
+// use inquire::Select;
+
+// #[tokio::main]
+// async fn main() -> Result<()> {
+//     let mut chat_context = chat::ChatContext::new()?;
+
+//     let options = vec![
+//         commands::Command::ListFiles,
+//         commands::Command::LoadFile,
+//         commands::Command::ChangeDirectory,
+//         commands::Command::AskQuestion,
+//         commands::Command::ShowHistory,
+//         commands::Command::Exit,
+//     ];
+
+//     print!("\x1B[2J\x1B[1;1H");
+//     io::stdout().flush().unwrap();
+
+//     loop {
+//         let ans = Select::new("What would you like to do?", options.clone())
+//             .with_help_message("Use ↑↓ arrows to navigate, enter to select")
+//             .prompt()
+//             .map_err(|e| {
+//                 println!("Error while selection an option {}", e);
+//                 e
+//             })?;
+
+//         commands::execute_command(ans, &mut chat_context).await?;
+//     }
+// }
 
 /*
 B////
