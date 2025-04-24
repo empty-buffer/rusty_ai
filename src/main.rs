@@ -1,9 +1,10 @@
-// mod chat;
+mod chat;
 mod editor;
 mod error;
 mod render;
+mod syntax;
 
-// mod files;
+mod files;
 // use std::io::{self, Write};
 // mod commands;
 use error::Result;
@@ -27,7 +28,7 @@ fn main() -> Result<()> {
     // Create an editor instance
     let mut editor = editor::Editor::new();
 
-    if let Err(e) = editor.open_file(".rusty/history.md") {
+    if let Err(e) = editor.open_file(".rusty/chat.rs") {
         // Handle file opening error (you might want to show this to the user)
         eprintln!("Error opening file: {}", e);
     }
@@ -69,8 +70,8 @@ fn run_editor(editor: &mut editor::Editor, render_state: &mut render::RenderStat
                     break;
                 }
 
-                // Handle the key in the editor
-                let should_quit = editor.handle_key(code)?;
+                // Pass both the key and modifiers to the editor
+                let should_quit = editor.handle_key(code, modifiers)?;
                 if should_quit {
                     break;
                 }

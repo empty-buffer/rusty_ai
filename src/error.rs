@@ -18,6 +18,9 @@ pub enum Error {
     // History(crate::chat::history)
     #[from]
     InquireError(inquire::InquireError),
+
+    #[from]
+    TreeSitter(tree_sitter::QueryError),
 }
 
 impl From<&str> for Error {

@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
+#[derive(Debug, Clone)]
 pub struct History {
     // pub root: String,
     pub file_path: String,
