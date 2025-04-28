@@ -1,5 +1,6 @@
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, Mode, RequestState};
 use crate::error::Result;
+
 use crossterm::{
     cursor::MoveTo,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
@@ -21,7 +22,8 @@ pub struct RenderState {
     previous_content: String, // Stores the previously rendered content
     previous_cursor: (usize, usize), // Previous cursor position
     previous_mode: Mode,      // Previous editor mode
-    previous_modified: bool,  // Previous modification state
+    previous_request_stae: RequestState,
+    previous_modified: bool, // Previous modification state
 
     // Double buffering
     current_buffer: Vec<Vec<(char, Color, Option<Color>)>>, // char, fg, bg
@@ -45,6 +47,7 @@ impl RenderState {
             previous_content: String::new(),
             previous_cursor: (0, 0),
             previous_mode: Mode::Normal,
+            previous_request_stae: RequestState::Idle,
             previous_modified: false,
             current_buffer,
             previous_buffer,
@@ -115,6 +118,7 @@ pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()
     let content = editor.get_content();
     let (cursor_row, cursor_col) = editor.get_cursor_position();
     let mode = editor.get_mode().clone();
+    let request_state = editor.get_request_state().clone();
     let modified = editor.is_modified();
 
     // Clear the current buffer
@@ -130,6 +134,7 @@ pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()
     // Draw status and message lines to buffer
     draw_status_line_to_buffer(editor, render_state)?;
     draw_message_line_to_buffer(editor, render_state)?;
+    draw_request_state_line_to_buffer(editor, render_state)?;
 
     // Render the changes to the terminal
     render_buffer_changes(render_state)?;
@@ -149,6 +154,7 @@ pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()
     render_state.previous_content = content;
     render_state.previous_cursor = (cursor_row, cursor_col);
     render_state.previous_mode = mode;
+    render_state.previous_request_stae = request_state;
     render_state.previous_modified = modified;
 
     Ok(())
@@ -158,6 +164,8 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
     let content = editor.get_content();
     let viewport_height = render_state.term_height as usize - 2;
     let line_number_width = render_state.line_number_width;
+
+    let selection_range = editor.get_selection_range();
 
     // Get all visible lines
     let visible_lines: Vec<&str> = content
@@ -185,7 +193,6 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
     for (i, line) in visible_lines.iter().enumerate() {
         let row = i;
         let real_line_number = i + render_state.scroll_offset + 1;
-
         // Draw line number
         let line_num_str = format!("{:>width$} ", real_line_number, width = line_number_width);
         for (x, ch) in line_num_str.chars().enumerate() {
@@ -199,10 +206,16 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
         let mut col = line_number_width + 1;
 
         // Process each character in the line with its style
-        for (char_idx, ch) in line.chars().enumerate() {
-            let actual_char_idx = line_start_char_idx + char_idx;
-            let style = editor.get_style_at(actual_char_idx);
-
+        for (char_col, ch) in line.chars().enumerate() {
+            // let actual_char_idx = line_start_char_idx + char_idx;
+            let actual_row = row + render_state.scroll_offset;
+            //
+            let style = if editor.is_position_selected(actual_row, char_col, &selection_range) {
+                Style::Selection
+            } else {
+                let char_idx = line_start_indices[i] + char_col;
+                editor.get_style_at(char_idx)
+            };
             // Set color based on style
             let (fg_color, bg_color) = match style {
                 Style::Normal => (Color::White, None),
@@ -215,6 +228,7 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
                 Style::Variable => (Color::White, None),
                 Style::Constant => (Color::Yellow, None),
                 Style::Operator => (Color::White, None),
+                Style::Selection => (Color::Black, Some(Color::Grey)),
                 Style::Error => (Color::Red, Some(Color::White)),
             };
 
@@ -248,17 +262,21 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
 }
 
 fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
-    let row = render_state.term_height as usize - 2;
+    let row = render_state.term_height as usize - 3;
 
     // Filename or [No Name]
     let filename = editor.get_file_name().unwrap_or("[No Name]");
     let modified_indicator = if editor.is_modified() { " [+] " } else { " " };
 
     // Mode indicator
-    let mode = match editor.get_mode() {
-        Mode::Normal => "NORMAL",
-        Mode::Insert => "INSERT",
-        Mode::Select => "SELECT",
+    let mode = if editor.is_waiting_for_command() {
+        "WAITING FOR COMMAND"
+    } else {
+        match editor.get_mode() {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Select => "SELECT",
+        }
     };
 
     // Get cursor position
@@ -299,13 +317,15 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
 }
 
 fn draw_message_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
-    let row = render_state.term_height as usize - 1;
+    let row = render_state.term_height as usize - 2;
 
     // Help message based on mode
     let help_msg = match editor.get_mode() {
-        Mode::Normal => "^Q: Quit | i: Insert | v: Select | s: Save",
+        Mode::Normal => "^Q: Quit | i: Insert | v: Select | s: Save | y: Copy selection",
         Mode::Insert => "ESC: Normal mode | Arrow keys: Navigate",
-        Mode::Select => "ESC: Normal mode | Arrow keys: Extend selection",
+        Mode::Select => {
+            "ESC: Normal mode | Arrow keys: Extend selection | y: Copy and exit selection | d: Delete"
+        }
     };
 
     // Fill message line
@@ -314,6 +334,39 @@ fn draw_message_line_to_buffer(editor: &Editor, render_state: &mut RenderState) 
             break;
         }
         render_state.set_cell(x, row, ch, Color::DarkGrey, None);
+    }
+
+    // Clear any remaining part of the line
+    for x in help_msg.len()..render_state.term_width as usize {
+        render_state.set_cell(x, row, ' ', Color::Reset, None);
+    }
+
+    Ok(())
+}
+
+fn draw_request_state_line_to_buffer(
+    editor: &Editor,
+    render_state: &mut RenderState,
+) -> Result<()> {
+    let row = render_state.term_height as usize - 1;
+
+    // Help message based on mode
+    let help_msg = match editor.get_request_state() {
+        RequestState::Idle => format!("Request Status: {}", "Idle"),
+        //TODO PROVIDER
+        RequestState::Proccessing => format!("Request Status: {}", "In Progress"),
+        RequestState::Error(e) => {
+            let msg = format!("Request Status: Error: {}", e);
+            msg
+        }
+    };
+
+    // Fill message line
+    for (x, ch) in help_msg.chars().enumerate() {
+        if x >= render_state.term_width as usize {
+            break;
+        }
+        render_state.set_cell(x, row, ch, Color::White, None);
     }
 
     // Clear any remaining part of the line
@@ -462,7 +515,10 @@ fn draw_content(editor: &Editor, render_state: &RenderState, stdout: &mut Stdout
         // Process each character in the line with its style
         for (char_idx, ch) in line.chars().enumerate() {
             let actual_char_idx = line_start_char_idx + char_idx;
-            let style = editor.get_style_at(actual_char_idx);
+            let actual_row = row + render_state.scroll_offset;
+
+            // let style = editor.get_style_at(actual_char_idx);
+            let style = editor.get_style_for_position(actual_row, actual_char_idx);
 
             // Set color based on style
             let (fg_color, bg_color) = match style {
@@ -476,6 +532,7 @@ fn draw_content(editor: &Editor, render_state: &RenderState, stdout: &mut Stdout
                 Style::Variable => (Color::White, None),
                 Style::Constant => (Color::Yellow, None),
                 Style::Operator => (Color::White, None),
+                Style::Selection => (Color::Black, Some(Color::Grey)),
                 Style::Error => (Color::Red, Some(Color::White)),
             };
 
@@ -518,72 +575,72 @@ fn draw_content(editor: &Editor, render_state: &RenderState, stdout: &mut Stdout
     Ok(())
 }
 
-fn draw_status_line(
-    editor: &Editor,
-    render_state: &RenderState,
-    stdout: &mut Stdout,
-) -> Result<()> {
-    // Position at the bottom of the screen - 2
-    stdout.queue(MoveTo(0, render_state.term_height - 2))?;
-    stdout.queue(Clear(ClearType::CurrentLine))?;
+// fn draw_status_line(
+//     editor: &Editor,
+//     render_state: &RenderState,
+//     stdout: &mut Stdout,
+// ) -> Result<()> {
+//     // Position at the bottom of the screen - 2
+//     stdout.queue(MoveTo(0, render_state.term_height - 2))?;
+//     stdout.queue(Clear(ClearType::CurrentLine))?;
 
-    // Set background to white, text to black
-    stdout.queue(SetBackgroundColor(Color::White))?;
-    stdout.queue(SetForegroundColor(Color::Black))?;
+//     // Set background to white, text to black
+//     stdout.queue(SetBackgroundColor(Color::White))?;
+//     stdout.queue(SetForegroundColor(Color::Black))?;
 
-    // Filename or [No Name]
-    let filename = editor.get_file_name().unwrap_or("[No Name]");
-    let modified_indicator = if editor.is_modified() { " [+] " } else { " " };
+//     // Filename or [No Name]
+//     let filename = editor.get_file_name().unwrap_or("[No Name]");
+//     let modified_indicator = if editor.is_modified() { " [+] " } else { " " };
 
-    // Mode indicator
-    let mode = match editor.get_mode() {
-        Mode::Normal => "NORMAL",
-        Mode::Insert => "INSERT",
-        Mode::Select => "SELECT",
-    };
+//     // Mode indicator
+//     let mode = match editor.get_mode() {
+//         Mode::Normal => "NORMAL",
+//         Mode::Insert => "INSERT",
+//         Mode::Select => "SELECT",
+//     };
 
-    // Get cursor position
-    let (row, col) = editor.get_cursor_position();
+//     // Get cursor position
+//     let (row, col) = editor.get_cursor_position();
 
-    // Format the status line
-    let left_status = format!("{}{} - {} ", filename, modified_indicator, mode);
-    let right_status = format!(" Ln {}, Col {} ", row + 1, col + 1);
+//     // Format the status line
+//     let left_status = format!("{}{} - {} ", filename, modified_indicator, mode);
+//     let right_status = format!(" Ln {}, Col {} ", row + 1, col + 1);
 
-    let current_term_width = render_state.term_width as usize;
-    // Calculate padding to right-align the position info
-    let padding_width = current_term_width
-        .saturating_sub(left_status.len())
-        .saturating_sub(right_status.len());
-    let padding = " ".repeat(padding_width);
+//     let current_term_width = render_state.term_width as usize;
+//     // Calculate padding to right-align the position info
+//     let padding_width = current_term_width
+//         .saturating_sub(left_status.len())
+//         .saturating_sub(right_status.len());
+//     let padding = " ".repeat(padding_width);
 
-    stdout.queue(Print(left_status))?;
-    stdout.queue(Print(padding))?;
-    stdout.queue(Print(right_status))?;
-    stdout.queue(ResetColor)?;
+//     stdout.queue(Print(left_status))?;
+//     stdout.queue(Print(padding))?;
+//     stdout.queue(Print(right_status))?;
+//     stdout.queue(ResetColor)?;
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-fn draw_message_line(
-    editor: &Editor,
-    render_state: &RenderState,
-    stdout: &mut Stdout,
-) -> Result<()> {
-    // Position at the bottom of the screen - 1
-    stdout.queue(MoveTo(0, render_state.term_height - 1))?;
-    stdout.queue(Clear(ClearType::CurrentLine))?;
+// fn draw_message_line(
+//     editor: &Editor,
+//     render_state: &RenderState,
+//     stdout: &mut Stdout,
+// ) -> Result<()> {
+//     // Position at the bottom of the screen - 1
+//     stdout.queue(MoveTo(0, render_state.term_height - 1))?;
+//     stdout.queue(Clear(ClearType::CurrentLine))?;
 
-    // You can add messages here (like "File saved" or error messages)
-    // For now, you can show key bindings as a help message
-    let help_msg = match editor.get_mode() {
-        Mode::Normal => "^Q: Quit | i: Insert | v: Select | s: Save",
-        Mode::Insert => "ESC: Normal mode | Arrow keys: Navigate",
-        Mode::Select => "ESC: Normal mode | Arrow keys: Extend selection",
-    };
+//     // You can add messages here (like "File saved" or error messages)
+//     // For now, you can show key bindings as a help message
+//     let help_msg = match editor.get_mode() {
+//         Mode::Normal => "^Q: Quit | i: Insert | v: Select | s: Save",
+//         Mode::Insert => "ESC: Normal mode | Arrow keys: Navigate",
+//         Mode::Select => "ESC: Normal mode | Arrow keys: Extend selection",
+//     };
 
-    stdout.queue(SetForegroundColor(Color::DarkGrey))?;
-    stdout.queue(Print(help_msg))?;
-    stdout.queue(ResetColor)?;
+//     stdout.queue(SetForegroundColor(Color::DarkGrey))?;
+//     stdout.queue(Print(help_msg))?;
+//     stdout.queue(ResetColor)?;
 
-    Ok(())
-}
+//     Ok(())
+// }

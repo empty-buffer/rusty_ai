@@ -1,3 +1,4 @@
+mod async_handler;
 mod chat;
 mod editor;
 mod error;
@@ -26,9 +27,10 @@ fn main() -> Result<()> {
     execute!(stdout(), EnterAlternateScreen)?;
 
     // Create an editor instance
+    // let editor = Arc::new(Mutex::new(Editor::new()));
     let mut editor = editor::Editor::new();
 
-    if let Err(e) = editor.open_file(".rusty/chat.rs") {
+    if let Err(e) = editor.open_file(".rusty/history.md") {
         // Handle file opening error (you might want to show this to the user)
         eprintln!("Error opening file: {}", e);
     }
@@ -52,6 +54,9 @@ fn run_editor(editor: &mut editor::Editor, render_state: &mut render::RenderStat
     let mut last_render = Instant::now();
 
     loop {
+        // Check for any API responses that need to be processed
+        editor.check_api_responses();
+
         // Render the screen at controlled intervals
         let now = Instant::now();
         if now.duration_since(last_render) >= frame_duration {

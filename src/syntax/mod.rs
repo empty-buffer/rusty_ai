@@ -20,6 +20,7 @@ pub enum Style {
     Constant,
     Operator,
     Error,
+    Selection,
 }
 
 pub struct SyntaxHighlighter {
@@ -36,19 +37,10 @@ impl SyntaxHighlighter {
         let mut languages = HashMap::new();
         let mut queries = HashMap::new();
 
-        // let mut parser = Parser::new();
-        // let language = tree_sitter_rust::LANGUAGE;
-        // parser
-        //     .set_language(&language.into())
-        //     .expect("Error loading Rust parser");
-
-        // tree_sitter_rust::HIGHLIGHTS_QUERY;
-
-        // let tree = parser.parse(code, None).unwrap();
-
         // Register Rust language
         let rust_language = tree_sitter_rust::LANGUAGE;
         languages.insert("rs".to_string(), rust_language);
+        languages.insert("md".to_string(), rust_language);
 
         // Rust highlight query - simplified for demonstration
         let rust_query = Query::new(&rust_language.into(), tree_sitter_rust::HIGHLIGHTS_QUERY)?;

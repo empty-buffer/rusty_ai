@@ -28,6 +28,12 @@ impl From<Model> for &str {
     }
 }
 
+impl core::fmt::Display for Model {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
+        write!(fmt, "{self:?}")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatContext {
     pub model: Model,
@@ -40,16 +46,16 @@ impl ChatContext {
         })
     }
 
-    pub async fn send_to_api(self, context: &str) -> Result<String> {
+    pub async fn send_to_api(self, model: Model, context: &str) -> Result<String> {
         let chat_req = ChatRequest::new(vec![
-            ChatMessage::system("Questions related to Rust language"),
+            ChatMessage::system("Questions related eather to Rust or Go language"),
             ChatMessage::user(context),
         ]);
 
         let chat_client = Client::default();
 
         let res = chat_client
-            .exec_chat(self.model.clone().into(), chat_req, None)
+            .exec_chat(model.into(), chat_req, None)
             .await
             .expect("Big Problem");
 
