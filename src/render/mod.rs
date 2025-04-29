@@ -133,7 +133,7 @@ pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()
 
     // Draw status and message lines to buffer
     draw_status_line_to_buffer(editor, render_state)?;
-    draw_message_line_to_buffer(editor, render_state)?;
+    // draw_message_line_to_buffer(editor, render_state)?;
     draw_request_state_line_to_buffer(editor, render_state)?;
 
     // Render the changes to the terminal
@@ -262,7 +262,7 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
 }
 
 fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
-    let row = render_state.term_height as usize - 3;
+    let row = render_state.term_height as usize - 2;
 
     // Filename or [No Name]
     let filename = editor.get_file_name().unwrap_or("[No Name]");
@@ -284,7 +284,7 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
 
     // Format the status line
     let left_status = format!("{}{} - {} ", filename, modified_indicator, mode);
-    let right_status = format!(" Ln {}, Col {} ", cursor_row + 1, cursor_col + 1);
+    let right_status = format!("  {}:{}  ", cursor_row + 1, cursor_col + 1);
 
     let term_width = render_state.term_width as usize;
 

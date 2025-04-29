@@ -21,7 +21,7 @@ pub enum Model {
 impl From<Model> for &str {
     fn from(value: Model) -> Self {
         match value {
-            Model::OLLAMA => "llama3.1:8b",
+            Model::OLLAMA => "qwen2.5-coder:32b",
             Model::OPENAI => "gpt-4o-mini",
             Model::ANTROPIC => todo!(),
         }

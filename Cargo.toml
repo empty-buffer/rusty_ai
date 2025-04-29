@@ -29,7 +29,7 @@ once_cell = "1.17.0"
 derive_more = { version = "1.0.0-beta", features = ["from"] }
 
 # -- Terminal
-genai = "0.1.21"
+genai = "0.2.3"
 
 # -- Syntax Highlighter
 tree-sitter = "0.25.3"
