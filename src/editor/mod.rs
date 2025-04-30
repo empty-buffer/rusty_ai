@@ -21,6 +21,8 @@ use std::thread;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
+use crate::syntax::cache::SyntaxCache;
+
 static RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
 
@@ -33,8 +35,11 @@ pub struct Editor {
     file_path: Option<String>,
     modified: bool,
     chat_context: ChatContext,
+
+    syntax_cache: SyntaxCache,
     syntax_highlighter: Option<SyntaxHighlighter>,
     syntax_highlights: Vec<(Range<usize>, Style)>,
+
     selection_start: Option<(usize, usize)>,
     selection_active: bool,
 
@@ -74,15 +79,20 @@ impl Editor {
         let async_handler =
             AsyncCommandHandler::new(Arc::clone(&shared_state), chat_context.clone());
 
+        let mut buffer = Rope::new();
+        buffer.insert(0, "\n");
         Self {
-            buffer: Rope::new(),
+            buffer,
             cursor_row: 0,
             cursor_col: 0,
             mode: Mode::Normal,
             file_path: None,
             modified: false,
+
+            syntax_cache: SyntaxCache::new(),
             syntax_highlighter,
             syntax_highlights: Vec::new(),
+
             chat_context,
             selection_start: None,
             selection_active: false,
@@ -98,13 +108,56 @@ impl Editor {
         }
     }
 
+    pub fn get_syntax_cache_dirty_lines(&self, real_line_number: usize) -> bool {
+        self.syntax_cache.dirty_lines.contains(&real_line_number)
+    }
+
+    pub fn syntax_cache_is_line_cached(&self, real_line_number: usize) -> bool {
+        self.syntax_cache.is_line_cached(real_line_number)
+    }
+
+    pub fn set_syntax_cache_line_styles(
+        &mut self,
+        real_line_number: usize,
+        line_styles: Vec<Style>,
+    ) {
+        self.syntax_cache
+            .cache_line_styles(real_line_number, line_styles);
+    }
+
+    pub fn get_syntax_cache_cached_style(
+        &self,
+        actual_row: usize,
+        char_col: usize,
+    ) -> Option<Style> {
+        self.syntax_cache.get_cached_style(actual_row, char_col)
+    }
+
+    //this method to invalidate syntax highlighting after edits
+    pub fn invalidate_syntax_at_line(&mut self, line: usize) {
+        // Mark this line and subsequent lines as dirty
+        let total_lines = self.buffer.len_lines();
+        self.syntax_cache.mark_range_dirty(line, total_lines);
+    }
+
     pub fn update_syntax_highlighting(&mut self) {
+        // Check if we need a full update
+        let current_len = self.buffer.len_chars();
+        let need_full_update = current_len != self.syntax_cache.last_content_length;
+
+        if need_full_update {
+            // Clear cache for a full update
+            self.syntax_cache.mark_all_dirty();
+            self.syntax_cache.last_content_length = current_len;
+        }
+
         if let Some(highlighter) = &self.syntax_highlighter {
             let language = self
                 .file_path
                 .as_ref()
                 .and_then(|path| highlighter.detect_language(path));
 
+            // Only perform full highlighting when necessary
             let highlights = highlighter.highlight_buffer(&self.buffer, language);
             self.syntax_highlights =
                 highlighter.convert_highlights_to_char_ranges(&self.buffer, highlights);
@@ -123,6 +176,53 @@ impl Editor {
         self.update_syntax_highlighting();
 
         Ok(())
+    }
+
+    pub fn highlight_line(&mut self, line_number: usize) -> Vec<Style> {
+        // Check if the line is already cached and not dirty
+        if self.syntax_cache.is_line_cached(line_number) {
+            return self
+                .syntax_cache
+                .line_styles
+                .get(&line_number)
+                .unwrap()
+                .clone();
+        }
+
+        let line = self.buffer.line(line_number);
+        let line_start_char = self.buffer.line_to_char(line_number);
+        let line_end_char = line_start_char + line.len_chars();
+
+        let mut line_styles = Vec::with_capacity(line.len_chars());
+
+        // For each character in the line, determine its style
+        for i in 0..line.len_chars() {
+            let char_idx = line_start_char + i;
+
+            // Default style
+            let mut style = Style::Normal;
+
+            // Check against syntax highlights
+            if self.is_position_selected(line_number, i, &self.get_selection_range()) {
+                style = Style::Selection;
+            } else {
+                // Check against syntax highlights
+                for (range, highlight_style) in &self.syntax_highlights {
+                    if range.contains(&char_idx) {
+                        style = *highlight_style;
+                        break;
+                    }
+                }
+            }
+
+            line_styles.push(style);
+        }
+
+        // Cache the result
+        self.syntax_cache
+            .cache_line_styles(line_number, line_styles.clone());
+
+        line_styles
     }
 
     fn copy_selection_to_clipboard(&mut self) -> Result<()> {
@@ -161,12 +261,28 @@ impl Editor {
         Some(self.buffer.slice(start_idx..end_idx).to_string())
     }
 
-    pub fn get_style_at(&self, char_idx: usize) -> Style {
-        for (range, style) in &self.syntax_highlights {
-            if range.contains(&char_idx) {
-                return *style;
-            }
+    pub fn get_style_at(&mut self, char_idx: usize) -> Style {
+        // Convert char_idx to line and column
+        let position = self.position_from_char_idx(char_idx);
+        let (line, col) = position;
+
+        // Check for selection first (direct check)
+        if self.is_position_selected(line, col, &self.get_selection_range()) {
+            return Style::Selection;
         }
+
+        // Try to get from cache first
+        if let Some(style) = self.syntax_cache.get_cached_style(line, col) {
+            return style;
+        }
+
+        // If not in cache, highlight the whole line and get the style
+        let line_styles = self.highlight_line(line);
+        if col < line_styles.len() {
+            return line_styles[col];
+        }
+
+        // Fallback
         Style::Normal
     }
 
@@ -235,22 +351,6 @@ impl Editor {
         self.waiting_for_g_command
     }
 
-    // fn select_to_end_of_line(&mut self) -> Result<bool> {
-    //     // Set the starting point for the selection
-    //     self.selection_start = Some((self.cursor_row, self.cursor_col));
-    //     self.selection_active = true;
-
-    //     // Move the cursor to the end of the line
-    //     let line = self.buffer.line(self.cursor_row);
-    //     let line_len = line.len_chars().saturating_sub(1); // Account for newline
-    //     self.cursor_col = line_len;
-
-    //     // Switch to select mode
-    //     self.mode = Mode::Select;
-
-    //     Ok(false)
-    // }
-    //
     fn move_to_end_of_line(&mut self) -> Result<bool> {
         // Move the cursor to the end of the line
         let line = self.buffer.line(self.cursor_row);
@@ -276,8 +376,16 @@ impl Editor {
     }
 
     fn move_to_end_of_buffer(&mut self) -> Result<bool> {
-        // Get the last line index
-        let last_line_idx = self.buffer.len_lines().saturating_sub(1);
+        // Get the last line indexo
+
+        // let last_line_idx = self.buffer.len_lines().saturating_sub(2);
+
+        let total_lines = self.buffer.len_lines();
+
+        // println!("total lines idx: {}", total_lines);
+
+        // Calculate the 0-based index of the last line
+        let last_line_idx = if total_lines > 0 { total_lines - 2 } else { 0 };
 
         // Move cursor to the last line
         self.cursor_row = last_line_idx;
@@ -368,7 +476,7 @@ impl Editor {
         }
     }
 
-    pub fn get_style_for_position(&self, row: usize, col: usize) -> Style {
+    pub fn get_style_for_position(&mut self, row: usize, col: usize) -> Style {
         // Check if the position is selected first
         if self.is_position_selected(row, col, &self.get_selection_range()) {
             return Style::Selection;
@@ -411,11 +519,6 @@ impl Editor {
                     return Ok(false);
                 }
                 KeyCode::Char('w') => {
-                    // Save changes to file if there's a file path
-                    // if self.file_path.is_some() {
-                    //     self.save_file()?;
-                    // }
-
                     // Clear the buffer
                     self.buffer = Rope::new();
                     self.cursor_row = 0;
@@ -438,9 +541,9 @@ impl Editor {
 
         // Handle regular keys based on mode
         match self.mode {
-            Mode::Normal => self.handle_normal_mode(key),
-            Mode::Insert => self.handle_insert_mode(key),
-            Mode::Select => self.handle_select_mode(key),
+            Mode::Normal => self.handle_normal_mode(key, modifiers),
+            Mode::Insert => self.handle_insert_mode(key, modifiers),
+            Mode::Select => self.handle_select_mode(key, modifiers),
         }
     }
 
@@ -472,7 +575,16 @@ impl Editor {
         Ok(())
     }
 
-    fn handle_normal_mode(&mut self, key: KeyCode) -> Result<bool> {
+    fn handle_normal_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        if (modifiers.contains(KeyModifiers::META) && key == KeyCode::Char('v'))
+            || (modifiers.is_empty() && key == KeyCode::Char('p'))
+        {
+            match self.paste_from_clipboard() {
+                Ok(_) => return Ok(false),
+                Err(e) => eprintln!("Paste error: {}", e),
+            }
+        }
+
         if self.waiting_for_g_command {
             self.waiting_for_g_command = false; // Reset the flag
 
@@ -529,6 +641,15 @@ impl Editor {
             // Mode switching
             KeyCode::Char('i') => {
                 self.mode = Mode::Insert;
+
+                // println!("{}", self.buffer.len_lines());
+
+                if self.buffer.len_lines() == 1 && self.buffer.len_chars() == 0 {
+                    self.buffer.insert(0, "\n");
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                }
+
                 Ok(false)
             }
             KeyCode::Char('v') => {
@@ -554,7 +675,14 @@ impl Editor {
         }
     }
 
-    fn handle_insert_mode(&mut self, key: KeyCode) -> Result<bool> {
+    fn handle_insert_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        if modifiers.contains(KeyModifiers::META) && key == KeyCode::Char('v') {
+            match self.paste_from_clipboard() {
+                Ok(_) => return Ok(false),
+                Err(e) => eprintln!("Paste error: {}", e),
+            }
+        }
+
         match key {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -584,7 +712,7 @@ impl Editor {
         }
     }
 
-    fn handle_select_mode(&mut self, key: KeyCode) -> Result<bool> {
+    fn handle_select_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
         if self.waiting_for_g_command {
             self.waiting_for_g_command = false; // Reset the flag
 
@@ -658,16 +786,28 @@ impl Editor {
     }
 
     fn move_cursor_down(&mut self) -> Result<bool> {
-        if self.cursor_row < self.buffer.len_lines().saturating_sub(1) {
+        // Get the actual number of lines in the buffer
+        let total_lines = self.buffer.len_lines();
+
+        let last_line_index = if total_lines > 0 { total_lines - 2 } else { 0 };
+
+        // Only move down if we're not already at the last line
+        if self.cursor_row < last_line_index {
             self.cursor_row += 1;
 
             // Make sure cursor doesn't go beyond end of line
             let line = self.buffer.line(self.cursor_row);
-            let line_len = line.len_chars().saturating_sub(1); // Account for newline
+            let line_len = if line.len_chars() > 0 {
+                line.len_chars() - 1 // Account for newline
+            } else {
+                0 // Handle empty lines
+            };
+
             if self.cursor_col > line_len {
                 self.cursor_col = line_len;
             }
         }
+
         Ok(false)
     }
 
@@ -685,14 +825,42 @@ impl Editor {
 
     fn move_cursor_right(&mut self) -> Result<bool> {
         let current_line = self.buffer.line(self.cursor_row);
-        let line_len = current_line.len_chars().saturating_sub(1); // Account for newline
+
+        let mut line_len: usize;
+
+        if self.mode == Mode::Insert {
+            line_len = current_line.len_chars();
+        } else {
+            line_len = current_line.len_chars().saturating_sub(1); // Account for newline
+        }
 
         if self.cursor_col < line_len {
             self.cursor_col += 1;
         } else if self.cursor_row < self.buffer.len_lines().saturating_sub(1) {
             // Move to beginning of next line
-            self.cursor_row += 1;
-            self.cursor_col = 0;
+            let total_lines = self.buffer.len_lines();
+
+            let last_line_index = if total_lines > 0 { total_lines - 2 } else { 0 };
+
+            if self.cursor_row < last_line_index {
+                self.cursor_row += 1;
+                self.cursor_col = 0;
+
+                // Make sure cursor doesn't go beyond end of line
+                let line = self.buffer.line(self.cursor_row);
+                let line_len = if line.len_chars() > 0 {
+                    line.len_chars() - 1 // Account for newline
+                } else {
+                    0 // Handle empty lines
+                };
+
+                if self.cursor_col > line_len {
+                    self.cursor_col = line_len;
+                }
+            }
+
+            // self.cursor_row += 1;
+            // self.cursor_col = 0;
         }
         Ok(false)
     }
@@ -702,21 +870,32 @@ impl Editor {
         self.buffer.insert_char(char_idx, c);
         self.cursor_col += 1;
         self.modified = true;
+
+        self.invalidate_syntax_at_line(self.cursor_row);
+
         Ok(())
     }
 
     fn insert_newline(&mut self) -> Result<()> {
         let char_idx = self.get_char_idx();
+
         self.buffer.insert_char(char_idx, '\n');
         self.cursor_row += 1;
         self.cursor_col = 0;
+
         self.modified = true;
+
+        self.invalidate_syntax_at_line(self.cursor_row - 1);
+
         Ok(())
     }
 
     fn delete_char_before_cursor(&mut self) -> Result<()> {
         let char_idx = self.get_char_idx();
         if char_idx > 0 {
+            // Get the current line before deletion
+            let current_line = self.cursor_row;
+
             self.buffer.remove(char_idx - 1..char_idx);
 
             // Update cursor position
@@ -725,10 +904,13 @@ impl Editor {
             } else if self.cursor_row > 0 {
                 self.cursor_row -= 1;
                 let line = self.buffer.line(self.cursor_row);
-                self.cursor_col = line.len_chars().saturating_sub(1);
+                self.cursor_col = line.len_chars();
             }
 
             self.modified = true;
+
+            // Invalidate syntax highlighting for affected lines
+            self.invalidate_syntax_at_line(current_line.saturating_sub(1));
         }
         Ok(())
     }
@@ -736,37 +918,74 @@ impl Editor {
     fn delete_char_at_cursor(&mut self) -> Result<()> {
         let char_idx = self.get_char_idx();
         if char_idx < self.buffer.len_chars() {
+            let current_line = self.cursor_row;
+
+            // Delete the character
             self.buffer.remove(char_idx..char_idx + 1);
             self.modified = true;
+
+            // Check if we need to update cursor position
+            if self.cursor_row < self.buffer.len_lines() {
+                let new_line_len = self.buffer.line(self.cursor_row).len_chars();
+
+                // If we're at the end of an empty line (except the newline character)
+                // and it's not the only line, move up to the previous line
+                if new_line_len <= 1 && self.cursor_col == 0 && self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                    // Move to the end of the previous line
+                    let prev_line_len = self.buffer.line(self.cursor_row).len_chars();
+                    self.cursor_col = prev_line_len.saturating_sub(1);
+                }
+                // Otherwise adjust cursor if it's beyond the new line length
+                else if self.cursor_col >= new_line_len {
+                    self.cursor_col = new_line_len.saturating_sub(1);
+                }
+            }
+
+            // Invalidate syntax highlighting
+            self.invalidate_syntax_at_line(current_line);
         }
         Ok(())
     }
 
-    // Helper methods
     fn get_char_idx(&self) -> usize {
-        let mut char_idx = 0;
-
-        // Add up all characters in preceding lines
-        for i in 0..self.cursor_row {
-            char_idx += self.buffer.line(i).len_chars();
-        }
+        // Get the character index at the beginning of the cursor row
+        let line_start_char = self.buffer.line_to_char(self.cursor_row);
 
         // Add column position
-        char_idx += self.cursor_col;
+        let char_idx = line_start_char + self.cursor_col;
 
         char_idx
     }
+
+    // Helper methods
+    // fn get_char_idx(&self) -> usize {
+    //     let mut char_idx = 0;
+
+    //     // Add up all characters in preceding lines
+    //     for i in 0..self.cursor_row {
+    //         char_idx += self.buffer.line(i).len_chars();
+    //     }
+
+    //     // Add column position
+    //     char_idx += self.cursor_col;
+
+    //     char_idx
+    // }
 
     fn delete_selection(&mut self) -> Result<()> {
         if let Some(selection_range) = self.get_selection_range() {
             let start_idx = selection_range.start;
             let end_idx = selection_range.end;
 
+            // Get line numbers affected by the deletion
+            let start_line = self.buffer.char_to_line(start_idx);
+            let end_line = self.buffer.char_to_line(end_idx);
+
             // Remove the selected text from the buffer
             self.buffer.remove(start_idx..end_idx);
 
             // Update cursor position to the start of the selection
-            // Convert the character index back to row and column
             let pos = self.position_from_char_idx(start_idx);
             self.cursor_row = pos.0;
             self.cursor_col = pos.1;
@@ -779,8 +998,8 @@ impl Editor {
             // Mark the buffer as modified
             self.modified = true;
 
-            // Update syntax highlighting
-            self.update_syntax_highlighting();
+            // Invalidate syntax highlighting from start_line onwards
+            self.invalidate_syntax_at_line(start_line);
 
             Ok(())
         } else {
@@ -839,5 +1058,51 @@ impl Editor {
 
     pub fn get_file_name(&self) -> Option<&str> {
         self.file_path.as_deref()
+    }
+
+    fn paste_from_clipboard(&mut self) -> Result<()> {
+        // Create a clipboard context
+        let mut ctx: ClipboardContext = ClipboardProvider::new()
+            .map_err(|e| format!("Failed to create clipboard context: {}", e))?;
+
+        // Get the clipboard content
+        let content = ctx
+            .get_contents()
+            .map_err(|e| format!("Failed to get clipboard contents: {}", e))?;
+
+        if content.is_empty() {
+            return Ok(());
+        }
+
+        // Get current character index
+        let char_idx = self.get_char_idx();
+
+        // Get current position before insertion
+        let current_row = self.cursor_row;
+
+        // Insert the content
+        self.buffer.insert(char_idx, &content);
+
+        // Update cursor position by counting newlines in pasted content
+        let new_position = self.position_from_char_idx(char_idx + content.len());
+        self.cursor_row = new_position.0;
+        self.cursor_col = new_position.1;
+
+        // Mark as modified
+        self.modified = true;
+
+        // Force a full refresh of syntax highlighting
+        self.syntax_cache.mark_all_dirty();
+        self.update_syntax_highlighting();
+
+        self.refresh_display();
+
+        Ok(())
+    }
+
+    pub fn refresh_display(&mut self) {
+        // Force a complete refresh of the editor state
+        self.syntax_cache.mark_all_dirty();
+        self.update_syntax_highlighting();
     }
 }

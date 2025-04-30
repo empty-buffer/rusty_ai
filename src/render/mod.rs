@@ -107,7 +107,7 @@ impl RenderState {
     }
 }
 
-pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
+pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
     // Update terminal dimensions in case of resize
     render_state.update_dimensions()?;
 
@@ -160,7 +160,7 @@ pub fn draw_screen(editor: &Editor, render_state: &mut RenderState) -> Result<()
     Ok(())
 }
 
-fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
+fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
     let content = editor.get_content();
     let viewport_height = render_state.term_height as usize - 2;
     let line_number_width = render_state.line_number_width;
@@ -189,6 +189,14 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
         current_index += line.len() + 1; // +1 for newline
     }
 
+    for (i, _) in visible_lines.iter().enumerate() {
+        let real_line_number = i + render_state.scroll_offset;
+        // Highlight the line if it's not cached or is marked dirty
+        if !editor.syntax_cache_is_line_cached(real_line_number) {
+            editor.highlight_line(real_line_number);
+        }
+    }
+
     // Draw each visible line
     for (i, line) in visible_lines.iter().enumerate() {
         let row = i;
@@ -212,6 +220,10 @@ fn draw_content_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Re
             //
             let style = if editor.is_position_selected(actual_row, char_col, &selection_range) {
                 Style::Selection
+            } else if let Some(cached_style) =
+                editor.get_syntax_cache_cached_style(actual_row, char_col)
+            {
+                cached_style
             } else {
                 let char_idx = line_start_indices[i] + char_col;
                 editor.get_style_at(char_idx)
@@ -465,7 +477,11 @@ fn adjust_scroll(editor: &Editor, render_state: &mut RenderState) {
     }
 }
 
-fn draw_content(editor: &Editor, render_state: &RenderState, stdout: &mut Stdout) -> Result<()> {
+fn draw_content(
+    editor: &mut Editor,
+    render_state: &RenderState,
+    stdout: &mut Stdout,
+) -> Result<()> {
     let content = editor.get_content();
     let viewport_height = render_state.term_height as usize - 2; // Space for status/message lines
     let line_number_width = render_state.line_number_width;
