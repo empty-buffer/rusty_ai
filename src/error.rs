@@ -1,4 +1,5 @@
 use derive_more::From;
+use rusty_ollama::OllamaError;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -18,6 +19,9 @@ pub enum Error {
     // History(crate::chat::history)
     #[from]
     InquireError(inquire::InquireError),
+
+    #[from]
+    Ollama(OllamaError),
 
     #[from]
     TreeSitter(tree_sitter::QueryError),
