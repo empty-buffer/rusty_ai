@@ -189,13 +189,13 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
         current_index += line.len() + 1; // +1 for newline
     }
 
-    for (i, _) in visible_lines.iter().enumerate() {
-        let real_line_number = i + render_state.scroll_offset;
-        // Highlight the line if it's not cached or is marked dirty
-        if !editor.syntax_cache_is_line_cached(real_line_number) {
-            editor.highlight_line(real_line_number);
-        }
-    }
+    // for (i, _) in visible_lines.iter().enumerate() {
+    //     let real_line_number = i + render_state.scroll_offset;
+    //     // Highlight the line if it's not cached or is marked dirty
+    //     if !editor.syntax_cache_is_line_cached(real_line_number) {
+    //         editor.highlight_line(real_line_number);
+    //     }
+    // }
 
     // Draw each visible line
     for (i, line) in visible_lines.iter().enumerate() {

@@ -385,7 +385,7 @@ impl Editor {
         // println!("total lines idx: {}", total_lines);
 
         // Calculate the 0-based index of the last line
-        let last_line_idx = if total_lines > 0 { total_lines - 2 } else { 0 };
+        let last_line_idx = if total_lines > 0 { total_lines - 1 } else { 0 };
 
         // Move cursor to the last line
         self.cursor_row = last_line_idx;
@@ -789,7 +789,7 @@ impl Editor {
         // Get the actual number of lines in the buffer
         let total_lines = self.buffer.len_lines();
 
-        let last_line_index = if total_lines > 0 { total_lines - 2 } else { 0 };
+        let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
 
         // Only move down if we're not already at the last line
         if self.cursor_row < last_line_index {
@@ -840,7 +840,7 @@ impl Editor {
             // Move to beginning of next line
             let total_lines = self.buffer.len_lines();
 
-            let last_line_index = if total_lines > 0 { total_lines - 2 } else { 0 };
+            let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
 
             if self.cursor_row < last_line_index {
                 self.cursor_row += 1;
