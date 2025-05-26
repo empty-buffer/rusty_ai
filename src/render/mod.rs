@@ -18,6 +18,8 @@ pub struct RenderState {
     term_height: u16,
     line_number_width: usize,
 
+    force_full_redraw: bool,
+
     // Double buffering support
     previous_content: String, // Stores the previously rendered content
     previous_cursor: (usize, usize), // Previous cursor position
@@ -43,6 +45,7 @@ impl RenderState {
             scroll_offset: 0,
             term_width,
             term_height,
+            force_full_redraw: false,
             line_number_width: 4,
             previous_content: String::new(),
             previous_cursor: (0, 0),
@@ -56,6 +59,7 @@ impl RenderState {
 
     pub fn update_dimensions(&mut self) -> Result<()> {
         let (width, height) = size()?;
+
         if width != self.term_width || height != self.term_height {
             self.term_width = width;
             self.term_height = height;
@@ -67,6 +71,9 @@ impl RenderState {
 
             // Force full redraw
             self.previous_content = String::new();
+            self.force_full_redraw = true;
+
+            stdout().queue(Clear(ClearType::All))?.flush()?;
         }
         Ok(())
     }
@@ -162,114 +169,124 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
 
 fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
     let content = editor.get_content();
-    let viewport_height = render_state.term_height as usize - 2;
+    let viewport_height = render_state.term_height as usize - 2; // status and request/message lines
     let line_number_width = render_state.line_number_width;
+    let max_line_width = render_state.term_width as usize - line_number_width - 1;
 
     let selection_range = editor.get_selection_range();
 
-    // Get all visible lines
-    let visible_lines: Vec<&str> = content
-        .lines()
-        .skip(render_state.scroll_offset)
-        .take(viewport_height)
-        .collect();
+    let mut current_screen_row = 0;
+    let mut line_start_indices = Vec::with_capacity(viewport_height);
 
-    // Pre-calculate line start indices
-    let mut line_start_indices = Vec::with_capacity(visible_lines.len());
-    let mut current_index = 0;
-
-    for line_idx in 0..render_state.scroll_offset {
-        if let Some(line) = content.lines().nth(line_idx) {
-            current_index += line.len() + 1; // +1 for newline
-        }
+    // Pre-calculate logical start-of-line indices (for selection calculation)
+    let mut char_start = 0;
+    for (i, line) in content.lines().enumerate() {
+        line_start_indices.push(char_start);
+        char_start += line.len() + 1; // +1 for newline
     }
 
-    for line in &visible_lines {
-        line_start_indices.push(current_index);
-        current_index += line.len() + 1; // +1 for newline
-    }
+    let lines: Vec<&str> = content.lines().collect();
 
-    // for (i, _) in visible_lines.iter().enumerate() {
-    //     let real_line_number = i + render_state.scroll_offset;
-    //     // Highlight the line if it's not cached or is marked dirty
-    //     if !editor.syntax_cache_is_line_cached(real_line_number) {
-    //         editor.highlight_line(real_line_number);
-    //     }
-    // }
-
-    // Draw each visible line
-    for (i, line) in visible_lines.iter().enumerate() {
-        let row = i;
-        let real_line_number = i + render_state.scroll_offset + 1;
-        // Draw line number
+    'outer: for (i, line) in lines.iter().enumerate().skip(render_state.scroll_offset) {
+        let real_line_number = i + 1;
         let line_num_str = format!("{:>width$} ", real_line_number, width = line_number_width);
-        for (x, ch) in line_num_str.chars().enumerate() {
-            render_state.set_cell(x, row, ch, Color::DarkGrey, None);
-        }
+        let line_chars: Vec<char> = line.chars().collect();
+        let mut visual_col_in_line = 0; // column index in logical line
+        let mut is_first_chunk = true;
 
-        // Draw the actual line content with syntax highlighting
-        let line_start_char_idx = line_start_indices[i];
-        let max_line_width = render_state.term_width as usize - line_number_width - 1;
-        let mut displayed_width = 0;
-        let mut col = line_number_width + 1;
-
-        // Process each character in the line with its style
-        for (char_col, ch) in line.chars().enumerate() {
-            // let actual_char_idx = line_start_char_idx + char_idx;
-            let actual_row = row + render_state.scroll_offset;
-            //
-            let style = if editor.is_position_selected(actual_row, char_col, &selection_range) {
-                Style::Selection
-            } else if let Some(cached_style) =
-                editor.get_syntax_cache_cached_style(actual_row, char_col)
-            {
-                cached_style
-            } else {
-                let char_idx = line_start_indices[i] + char_col;
-                editor.get_style_at(char_idx)
-            };
-            // Set color based on style
-            let (fg_color, bg_color) = match style {
-                Style::Normal => (Color::White, None),
-                Style::Keyword => (Color::Magenta, None),
-                Style::Function => (Color::Blue, None),
-                Style::Type => (Color::Cyan, None),
-                Style::String => (Color::Green, None),
-                Style::Number => (Color::Yellow, None),
-                Style::Comment => (Color::DarkGrey, None),
-                Style::Variable => (Color::White, None),
-                Style::Constant => (Color::Yellow, None),
-                Style::Operator => (Color::White, None),
-                Style::Selection => (Color::Black, Some(Color::Grey)),
-                Style::Error => (Color::Red, Some(Color::White)),
-            };
-
-            // Handle tab and width calculations
-            let width = if ch == '\t' {
-                4 - (displayed_width % 4) // Tab stops every 4 spaces
-            } else {
-                1
-            };
-
-            if displayed_width + width > max_line_width {
-                break;
+        while visual_col_in_line < line_chars.len() {
+            if current_screen_row >= viewport_height {
+                break 'outer;
             }
-
-            // Add character to buffer
-            if ch == '\t' {
-                for _ in 0..width {
-                    render_state.set_cell(col, row, ' ', fg_color, bg_color);
-                    col += 1;
+            // Draw line number only for the first visual chunk of the line
+            if is_first_chunk {
+                for (x, ch) in line_num_str.chars().enumerate() {
+                    render_state.set_cell(x, current_screen_row, ch, Color::DarkGrey, None);
                 }
             } else {
-                render_state.set_cell(col, row, ch, fg_color, bg_color);
-                col += 1;
+                // Fill line number area with spaces for wrapped chunks
+                for x in 0..=line_number_width {
+                    render_state.set_cell(x, current_screen_row, ' ', Color::DarkGrey, None);
+                }
             }
+            is_first_chunk = false;
 
-            displayed_width += width;
+            let mut displayed_width = 0;
+            let mut col = line_number_width + 1;
+            let chunk_start = visual_col_in_line;
+            while visual_col_in_line < line_chars.len() {
+                let ch = line_chars[visual_col_in_line];
+                let width = if ch == '\t' {
+                    4 - (displayed_width % 4)
+                } else {
+                    1
+                };
+                if displayed_width + width > max_line_width {
+                    break;
+                }
+                // calculate style (same logic as before)
+                let actual_row = i;
+                let char_idx = line_start_indices[i] + visual_col_in_line;
+                let style = if editor.is_position_selected(
+                    actual_row,
+                    visual_col_in_line,
+                    &selection_range,
+                ) {
+                    Style::Selection
+                } else if let Some(cached_style) =
+                    editor.get_syntax_cache_cached_style(actual_row, visual_col_in_line)
+                {
+                    cached_style
+                } else {
+                    editor.get_style_at(char_idx)
+                };
+                let (fg_color, bg_color) = match style {
+                    Style::Normal => (Color::White, None),
+                    Style::Keyword => (Color::Magenta, None),
+                    Style::Function => (Color::Blue, None),
+                    Style::Type => (Color::Cyan, None),
+                    Style::String => (Color::Green, None),
+                    Style::Number => (Color::Yellow, None),
+                    Style::Comment => (Color::DarkGrey, None),
+                    Style::Variable => (Color::White, None),
+                    Style::Constant => (Color::Yellow, None),
+                    Style::Operator => (Color::White, None),
+                    Style::Selection => (Color::Black, Some(Color::Grey)),
+                    Style::Error => (Color::Red, Some(Color::White)),
+                };
+                // draw
+                if ch == '\t' {
+                    for _ in 0..width {
+                        render_state.set_cell(col, current_screen_row, ' ', fg_color, bg_color);
+                        col += 1;
+                    }
+                } else {
+                    render_state.set_cell(col, current_screen_row, ch, fg_color, bg_color);
+                    col += 1;
+                }
+                displayed_width += width;
+                visual_col_in_line += 1;
+            }
+            current_screen_row += 1;
+        }
+        // Handle empty lines (draw their number)
+        if line_chars.is_empty() {
+            if current_screen_row >= viewport_height {
+                break;
+            }
+            for (x, ch) in line_num_str.chars().enumerate() {
+                render_state.set_cell(x, current_screen_row, ch, Color::DarkGrey, None);
+            }
+            current_screen_row += 1;
         }
     }
-
+    // Fill remainder of screen with spaces (clear old content)
+    while current_screen_row < viewport_height {
+        for x in 0..render_state.term_width as usize {
+            render_state.set_cell(x, current_screen_row, ' ', Color::Reset, None);
+        }
+        current_screen_row += 1;
+    }
     Ok(())
 }
 
@@ -389,7 +406,7 @@ fn draw_request_state_line_to_buffer(
     Ok(())
 }
 
-fn render_buffer_changes(render_state: &RenderState) -> Result<()> {
+fn render_buffer_changes(render_state: &mut RenderState) -> Result<()> {
     let mut stdout = stdout();
 
     // Track the current style to minimize style change commands
@@ -402,6 +419,7 @@ fn render_buffer_changes(render_state: &RenderState) -> Result<()> {
 
         while current_x < render_state.term_width as usize {
             // If this cell hasn't changed, skip it
+            // if !render_state.force_full_redraw && !render_state.cell_changed(current_x, y) {
             if !render_state.cell_changed(current_x, y) {
                 current_x += 1;
                 continue;
@@ -454,6 +472,8 @@ fn render_buffer_changes(render_state: &RenderState) -> Result<()> {
             current_x = end_x;
         }
     }
+
+    render_state.force_full_redraw = false;
 
     // Reset styles
     stdout.queue(ResetColor)?;

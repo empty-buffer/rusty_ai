@@ -95,10 +95,9 @@ impl ChatContext {
         let mut client = Ollama::new(endpoint, model)?;
 
         // client.stream_generate(prompt)
-        
+
         // client.context
         let response = client.generate(content).await?;
-
         Ok(response.response)
     }
 }

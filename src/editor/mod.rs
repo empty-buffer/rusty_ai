@@ -504,7 +504,8 @@ impl Editor {
 
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
         // Handle special key combinations first
-        if modifiers.contains(KeyModifiers::ALT) {
+        if modifiers.contains(KeyModifiers::SUPER) {
+            // if modifiers.contains(KeyModifiers::ALT) {
             match key {
                 KeyCode::Char('a') => {
                     self.send_to_antropic()?;
@@ -535,7 +536,9 @@ impl Editor {
                     return Ok(false);
                 }
 
-                _ => {}
+                _ => {
+                    println!("{:?}", key);
+                }
             }
         }
 

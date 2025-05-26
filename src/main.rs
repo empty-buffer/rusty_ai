@@ -11,9 +11,15 @@ mod files;
 use error::Result;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
+    execute, queue,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use std::io::{self, stdout};
 use std::time::{Duration, Instant};
@@ -22,9 +28,26 @@ fn main() -> Result<()> {
     // Process command-line arguments
     // let args: Vec<String> = env::args().collect();
 
+    let mut stdout = io::stdout();
     // Setup terminal
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableLineWrap)?;
+
+    let supports_keyboard_enhancement = matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    );
+
+    if supports_keyboard_enhancement {
+        queue!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES // | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                                                                    // | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                                                                    // | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
+    }
 
     // Create an editor instance
     // let editor = Arc::new(Mutex::new(Editor::new()));
@@ -43,7 +66,7 @@ fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
+    execute!(stdout, LeaveAlternateScreen, DisableLineWrap)?;
 
     // Return any error that occurred
     result
