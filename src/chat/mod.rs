@@ -25,8 +25,8 @@ pub enum Model {
 impl From<Model> for &str {
     fn from(value: Model) -> Self {
         match value {
-            Model::OLLAMA => "qwen3:30b-a3b",
-            Model::OPENAI => "gpt-4o-mini",
+            Model::OLLAMA => "qwen3:32b-q4_K_M",
+            Model::OPENAI => "gpt-4.1-mini",
             Model::ANTROPIC => todo!(),
         }
     }
@@ -35,7 +35,7 @@ impl From<Model> for &str {
 impl From<Model> for String {
     fn from(value: Model) -> Self {
         match value {
-            Model::OLLAMA => "qwen3:30b-a3b".to_owned(),
+            Model::OLLAMA => "qwen3:32b-q4_K_M".to_owned(),
             Model::OPENAI => "gpt-4o-mini".to_owned(),
             Model::ANTROPIC => todo!(),
         }

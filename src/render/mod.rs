@@ -12,7 +12,15 @@ use std::io::{self, stdout, Stdout, Write};
 
 use crate::syntax::Style;
 
+pub struct WrappedLineInfo {
+    pub logical_line: usize,
+    pub start_col: usize,
+    pub screen_row: usize,
+}
+
 pub struct RenderState {
+    wrapped_lines_info: Vec<WrappedLineInfo>,
+
     scroll_offset: usize, // First line displayed (for scrolling)
     term_width: u16,
     term_height: u16,
@@ -42,6 +50,7 @@ impl RenderState {
         let previous_buffer = vec![vec![default_cell; term_width as usize]; term_height as usize];
 
         Ok(Self {
+            wrapped_lines_info: Vec::new(),
             scroll_offset: 0,
             term_width,
             term_height,
@@ -147,11 +156,38 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
     render_buffer_changes(render_state)?;
 
     // Position the cursor
-    let visible_row = cursor_row.saturating_sub(render_state.scroll_offset);
-    let visible_col = cursor_col + render_state.line_number_width + 1;
+    let (cursor_row, cursor_col) = editor.get_cursor_position();
+
+    let cursor_visual_line = render_state
+        .wrapped_lines_info
+        .iter()
+        .filter(|wli| wli.logical_line == cursor_row && wli.start_col <= cursor_col)
+        .max_by_key(|wli| wli.start_col)
+        .map(|wli| wli.screen_row);
+
+    let visual_row = if let Some(screen_row) = cursor_visual_line {
+        if screen_row >= render_state.scroll_offset {
+            screen_row - render_state.scroll_offset
+        } else {
+            0 // cursor above viewport; clamped to top
+        }
+    } else {
+        0 // fallback
+    };
+
+    let visual_col = cursor_col
+        - render_state
+            .wrapped_lines_info
+            .iter()
+            .filter(|wli| wli.logical_line == cursor_row && wli.start_col <= cursor_col)
+            .max_by_key(|wli| wli.start_col)
+            .map(|wli| wli.start_col)
+            .unwrap_or(0)
+        + render_state.line_number_width
+        + 1;
 
     let mut stdout = stdout();
-    stdout.queue(MoveTo(visible_col as u16, visible_row as u16))?;
+    stdout.queue(MoveTo(visual_col as u16, visual_row as u16))?;
     stdout.flush()?;
 
     // Swap buffers for next frame
@@ -169,53 +205,33 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
 
 fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
     let content = editor.get_content();
-    let viewport_height = render_state.term_height as usize - 2; // status and request/message lines
+    let viewport_height = render_state.term_height as usize - 2;
     let line_number_width = render_state.line_number_width;
     let max_line_width = render_state.term_width as usize - line_number_width - 1;
 
     let selection_range = editor.get_selection_range();
 
-    let mut current_screen_row = 0;
-    let mut line_start_indices = Vec::with_capacity(viewport_height);
+    // First, clear previous wrapped lines info
+    render_state.wrapped_lines_info.clear();
 
-    // Pre-calculate logical start-of-line indices (for selection calculation)
-    let mut char_start = 0;
-    for (i, line) in content.lines().enumerate() {
-        line_start_indices.push(char_start);
-        char_start += line.len() + 1; // +1 for newline
-    }
-
+    // For **all** logical lines, build wrapped lines info
     let lines: Vec<&str> = content.lines().collect();
 
-    'outer: for (i, line) in lines.iter().enumerate().skip(render_state.scroll_offset) {
-        let real_line_number = i + 1;
-        let line_num_str = format!("{:>width$} ", real_line_number, width = line_number_width);
-        let line_chars: Vec<char> = line.chars().collect();
-        let mut visual_col_in_line = 0; // column index in logical line
-        let mut is_first_chunk = true;
+    let mut all_wrapped_lines = Vec::new();
 
-        while visual_col_in_line < line_chars.len() {
-            if current_screen_row >= viewport_height {
-                break 'outer;
-            }
-            // Draw line number only for the first visual chunk of the line
-            if is_first_chunk {
-                for (x, ch) in line_num_str.chars().enumerate() {
-                    render_state.set_cell(x, current_screen_row, ch, Color::DarkGrey, None);
-                }
-            } else {
-                // Fill line number area with spaces for wrapped chunks
-                for x in 0..=line_number_width {
-                    render_state.set_cell(x, current_screen_row, ' ', Color::DarkGrey, None);
-                }
-            }
-            is_first_chunk = false;
+    for (logical_line, line) in lines.iter().enumerate() {
+        let line_chars: Vec<char> = line.chars().collect();
+        let mut visual_col_in_line = 0;
+
+        while visual_col_in_line < line_chars.len()
+            || (line_chars.is_empty() && visual_col_in_line == 0)
+        {
+            all_wrapped_lines.push((logical_line, visual_col_in_line));
 
             let mut displayed_width = 0;
-            let mut col = line_number_width + 1;
-            let chunk_start = visual_col_in_line;
-            while visual_col_in_line < line_chars.len() {
-                let ch = line_chars[visual_col_in_line];
+            let mut chars_drawn = 0;
+            while visual_col_in_line + chars_drawn < line_chars.len() {
+                let ch = line_chars[visual_col_in_line + chars_drawn];
                 let width = if ch == '\t' {
                     4 - (displayed_width % 4)
                 } else {
@@ -224,69 +240,158 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
                 if displayed_width + width > max_line_width {
                     break;
                 }
-                // calculate style (same logic as before)
-                let actual_row = i;
-                let char_idx = line_start_indices[i] + visual_col_in_line;
-                let style = if editor.is_position_selected(
-                    actual_row,
-                    visual_col_in_line,
+
+                displayed_width += width;
+                chars_drawn += 1;
+            }
+
+            if chars_drawn == 0 && visual_col_in_line == 0 && line_chars.is_empty() {
+                chars_drawn = 1; // draw empty line chunk
+            }
+
+            visual_col_in_line += chars_drawn;
+        }
+    }
+
+    // Store the wrapped lines info with screen_row filled (relative to whole buffer)
+    render_state.wrapped_lines_info = all_wrapped_lines
+        .into_iter()
+        .enumerate()
+        .map(|(screen_row, (logical_line, start_col))| WrappedLineInfo {
+            logical_line,
+            start_col,
+            screen_row,
+        })
+        .collect();
+
+    // Now draw only the wrapped lines visible under scroll_offset
+
+    render_state.clear_buffer();
+
+    let viewport_start = render_state.scroll_offset;
+    let viewport_end =
+        (viewport_start + viewport_height).min(render_state.wrapped_lines_info.len());
+
+    for screen_row in viewport_start..viewport_end {
+        let wli = &render_state.wrapped_lines_info[screen_row];
+        let logical_line = wli.logical_line;
+        let start_col = wli.start_col;
+
+        // Draw line number only if first wrapped chunk in that logical line
+        let line_num_str = if start_col == 0 {
+            format!("{:>width$} ", logical_line + 1, width = line_number_width)
+        } else {
+            " ".repeat(line_number_width + 1)
+        };
+        for (x, ch) in line_num_str.chars().enumerate() {
+            render_state.set_cell(
+                x,
+                (screen_row - viewport_start) as usize,
+                ch,
+                Color::DarkGrey,
+                None,
+            );
+        }
+
+        // Draw wrapped line chunk content
+        let line_chars: Vec<char> = lines[logical_line].chars().collect();
+
+        let mut displayed_width = 0;
+        let mut col = line_number_width + 1;
+
+        let mut chars_drawn = 0;
+        while start_col + chars_drawn < line_chars.len() {
+            let ch = line_chars[start_col + chars_drawn];
+            let width = if ch == '\t' {
+                4 - (displayed_width % 4)
+            } else {
+                1
+            };
+            if displayed_width + width > max_line_width {
+                break;
+            }
+
+            // Determine style (selection, syntax, etc.)
+            let style = {
+                let char_idx = editor.char_idx_from_position(logical_line, start_col + chars_drawn);
+                if editor.is_position_selected(
+                    logical_line,
+                    start_col + chars_drawn,
                     &selection_range,
                 ) {
                     Style::Selection
                 } else if let Some(cached_style) =
-                    editor.get_syntax_cache_cached_style(actual_row, visual_col_in_line)
+                    editor.get_syntax_cache_cached_style(logical_line, start_col + chars_drawn)
                 {
                     cached_style
                 } else {
                     editor.get_style_at(char_idx)
-                };
-                let (fg_color, bg_color) = match style {
-                    Style::Normal => (Color::White, None),
-                    Style::Keyword => (Color::Magenta, None),
-                    Style::Function => (Color::Blue, None),
-                    Style::Type => (Color::Cyan, None),
-                    Style::String => (Color::Green, None),
-                    Style::Number => (Color::Yellow, None),
-                    Style::Comment => (Color::DarkGrey, None),
-                    Style::Variable => (Color::White, None),
-                    Style::Constant => (Color::Yellow, None),
-                    Style::Operator => (Color::White, None),
-                    Style::Selection => (Color::Black, Some(Color::Grey)),
-                    Style::Error => (Color::Red, Some(Color::White)),
-                };
-                // draw
-                if ch == '\t' {
-                    for _ in 0..width {
-                        render_state.set_cell(col, current_screen_row, ' ', fg_color, bg_color);
-                        col += 1;
-                    }
-                } else {
-                    render_state.set_cell(col, current_screen_row, ch, fg_color, bg_color);
-                    col += 1;
                 }
-                displayed_width += width;
-                visual_col_in_line += 1;
+            };
+            let (fg_color, bg_color) = match style {
+                Style::Normal => (Color::White, None),
+                Style::Keyword => (Color::Magenta, None),
+                Style::Function => (Color::Blue, None),
+                Style::Type => (Color::Cyan, None),
+                Style::String => (Color::Green, None),
+                Style::Number => (Color::Yellow, None),
+                Style::Comment => (Color::DarkGrey, None),
+                Style::Variable => (Color::White, None),
+                Style::Constant => (Color::Yellow, None),
+                Style::Operator => (Color::White, None),
+                Style::Selection => (Color::Black, Some(Color::Grey)),
+                Style::Error => (Color::Red, Some(Color::White)),
+            };
+
+            for _ in 0..width {
+                render_state.set_cell(
+                    col,
+                    (screen_row - viewport_start) as usize,
+                    ' ',
+                    fg_color,
+                    bg_color,
+                );
+                col += 1;
+                displayed_width += 1;
             }
-            current_screen_row += 1;
+
+            if ch != '\t' {
+                // Overwrite last space with actual char
+                let x = col - width;
+                for i in 0..width {
+                    render_state.set_cell(
+                        x + i,
+                        (screen_row - viewport_start) as usize,
+                        ch,
+                        fg_color,
+                        bg_color,
+                    );
+                }
+            }
+
+            chars_drawn += 1;
         }
-        // Handle empty lines (draw their number)
-        if line_chars.is_empty() {
-            if current_screen_row >= viewport_height {
-                break;
-            }
-            for (x, ch) in line_num_str.chars().enumerate() {
-                render_state.set_cell(x, current_screen_row, ch, Color::DarkGrey, None);
-            }
-            current_screen_row += 1;
+
+        // Fill end of line with spaces
+        while col < render_state.term_width as usize {
+            render_state.set_cell(
+                col,
+                (screen_row - viewport_start) as usize,
+                ' ',
+                Color::Reset,
+                None,
+            );
+            col += 1;
         }
     }
-    // Fill remainder of screen with spaces (clear old content)
-    while current_screen_row < viewport_height {
+
+    // Clear leftover lines if any
+    for row in (viewport_end - viewport_start)..viewport_height {
         for x in 0..render_state.term_width as usize {
-            render_state.set_cell(x, current_screen_row, ' ', Color::Reset, None);
+            render_state.set_cell(x, row as usize, ' ', Color::Reset, None);
         }
-        current_screen_row += 1;
     }
+
     Ok(())
 }
 
@@ -483,17 +588,51 @@ fn render_buffer_changes(render_state: &mut RenderState) -> Result<()> {
 }
 
 fn adjust_scroll(editor: &Editor, render_state: &mut RenderState) {
-    let (cursor_row, _) = editor.get_cursor_position();
+    let (cursor_row, cursor_col) = editor.get_cursor_position();
     let viewport_height = render_state.term_height as usize - 2; // Space for status/message lines
 
-    // If cursor is above visible area, scroll up
-    if cursor_row < render_state.scroll_offset {
-        render_state.scroll_offset = cursor_row;
+    // Find which visual line contains the cursor position
+    // Find the visual line containing the cursor:
+    let mut cursor_visual_line: Option<&WrappedLineInfo> = None;
+
+    for wli in &render_state.wrapped_lines_info {
+        if wli.logical_line == cursor_row && wli.start_col <= cursor_col && {
+            // Next wrapped line start_col (for same logical line) must be > cursor_col or no next wrap
+            true
+        } {
+            // To pick correct chunk, remember the max start_col ≤ cursor_col for logical_line
+            // We'll iterate all below, then take max start_col ≤ cursor_col
+
+            if let Some(current) = cursor_visual_line {
+                if wli.start_col > current.start_col {
+                    cursor_visual_line = Some(wli);
+                }
+            } else {
+                cursor_visual_line = Some(wli);
+            }
+        }
     }
 
-    // If cursor is below visible area, scroll down
-    if cursor_row >= render_state.scroll_offset + viewport_height {
-        render_state.scroll_offset = cursor_row - viewport_height + 1;
+    let cursor_visual_line = match cursor_visual_line {
+        Some(wli) => wli.screen_row,
+        None => 0, // fallback if not found
+    };
+
+    // Now scroll_offset is visual line index, adjust it to keep cursor visible
+
+    if cursor_visual_line < render_state.scroll_offset {
+        render_state.scroll_offset = cursor_visual_line;
+    } else if cursor_visual_line >= render_state.scroll_offset + viewport_height {
+        render_state.scroll_offset = cursor_visual_line - viewport_height + 1;
+    }
+
+    // Clamp scroll_offset not to exceed max visual lines
+    let max_scroll = render_state
+        .wrapped_lines_info
+        .len()
+        .saturating_sub(viewport_height);
+    if render_state.scroll_offset > max_scroll {
+        render_state.scroll_offset = max_scroll;
     }
 }
 

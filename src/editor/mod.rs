@@ -357,6 +357,8 @@ impl Editor {
         let line_len = line.len_chars().saturating_sub(1); // Account for newline
         self.cursor_col = line_len;
 
+        self.clamp_cursor();
+
         Ok(false)
     }
 
@@ -376,24 +378,28 @@ impl Editor {
     }
 
     fn move_to_end_of_buffer(&mut self) -> Result<bool> {
-        // Get the last line indexo
-
-        // let last_line_idx = self.buffer.len_lines().saturating_sub(2);
-
         let total_lines = self.buffer.len_lines();
 
-        // println!("total lines idx: {}", total_lines);
+        if total_lines == 0 {
+            // Buffer is empty: place cursor at 0,0
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+            return Ok(false);
+        }
 
-        // Calculate the 0-based index of the last line
-        let last_line_idx = if total_lines > 0 { total_lines - 1 } else { 0 };
+        let last_line_idx = total_lines - 1;
 
-        // Move cursor to the last line
         self.cursor_row = last_line_idx;
 
-        // Move cursor to the end of the last line
         let line = self.buffer.line(last_line_idx);
+
+        // line.len_chars() is always at least 1 (newline at end)
+        // saturate to 0 if len_chars() == 0 (shouldn't happen)
         let line_len = line.len_chars().saturating_sub(1);
+
         self.cursor_col = line_len;
+
+        self.clamp_cursor();
 
         Ok(false)
     }
@@ -487,7 +493,7 @@ impl Editor {
         self.get_style_at(char_idx)
     }
 
-    fn char_idx_from_position(&self, row: usize, col: usize) -> usize {
+    pub fn char_idx_from_position(&self, row: usize, col: usize) -> usize {
         if row >= self.buffer.len_lines() {
             return self.buffer.len_chars();
         }
@@ -504,8 +510,8 @@ impl Editor {
 
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
         // Handle special key combinations first
-        if modifiers.contains(KeyModifiers::SUPER) {
-            // if modifiers.contains(KeyModifiers::ALT) {
+        // if modifiers.contains(KeyModifiers::SUPER) {
+        if modifiers.contains(KeyModifiers::ALT) {
             match key {
                 KeyCode::Char('a') => {
                     self.send_to_antropic()?;
@@ -579,7 +585,7 @@ impl Editor {
     }
 
     fn handle_normal_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-        if (modifiers.contains(KeyModifiers::META) && key == KeyCode::Char('v'))
+        if (modifiers.contains(KeyModifiers::ALT) && key == KeyCode::Char('v'))
             || (modifiers.is_empty() && key == KeyCode::Char('p'))
         {
             match self.paste_from_clipboard() {
@@ -1107,5 +1113,28 @@ impl Editor {
         // Force a complete refresh of the editor state
         self.syntax_cache.mark_all_dirty();
         self.update_syntax_highlighting();
+    }
+
+    fn clamp_cursor(&mut self) {
+        let total_lines = self.buffer.len_lines();
+        if total_lines == 0 {
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+            return;
+        }
+
+        if self.cursor_row >= total_lines {
+            self.cursor_row = total_lines - 1;
+        }
+
+        let line_len = self
+            .buffer
+            .line(self.cursor_row)
+            .len_chars()
+            .saturating_sub(1);
+
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+        }
     }
 }
