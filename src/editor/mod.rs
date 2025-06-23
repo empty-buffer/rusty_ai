@@ -1,10 +1,15 @@
 use crate::error::Result;
+
+mod menu;
+
+use menu::MenuType;
+
 use once_cell::sync::Lazy;
 use ropey::Rope;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::chat::{ChatContext, Model};
+use crate::chat::{history::History, ChatContext, Model};
 
 use crate::syntax::{Style, SyntaxHighlighter};
 use clipboard::{ClipboardContext, ClipboardProvider};
@@ -23,8 +28,8 @@ use tokio::runtime::Runtime;
 
 use crate::syntax::cache::SyntaxCache;
 
-static RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
+// static RUNTIME: Lazy<Runtime> =
+//     Lazy::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
 
 // #[derive(Debug, Clone)]
 pub struct Editor {
@@ -50,6 +55,8 @@ pub struct Editor {
     // Track if we need to check for responses
     needs_response_check: bool,
 
+    menu_status: menu::CommandsMenu,
+
     waiting_for_g_command: bool,
     ai_menu_subcomand: bool,
     buffer_menu_subcomand: bool,
@@ -71,6 +78,11 @@ pub enum Mode {
 
 impl Editor {
     pub fn new() -> Self {
+        if let Ok(dd) = History::new() {
+        } else {
+            println!("{:?}", History::new().err());
+        }
+
         let chat_context = ChatContext::new().unwrap();
         let syntax_highlighter = SyntaxHighlighter::new().ok();
 
@@ -105,6 +117,8 @@ impl Editor {
 
             // Track if we need to check for responses
             needs_response_check: false,
+
+            menu_status: menu::CommandsMenu::default(),
 
             waiting_for_g_command: false,
             ai_menu_subcomand: false,
@@ -612,8 +626,9 @@ impl Editor {
             }
         }
 
-        if self.ai_menu_subcomand {
-            self.ai_menu_subcomand = false; // Reset the flag
+        if self.menu_status.is_active(MenuType::AI) {
+            self.menu_status.reset(); // Reset the flag
+            println!("AI MENU");
 
             match key {
                 KeyCode::Char('a') => {
@@ -632,8 +647,8 @@ impl Editor {
             }
         }
 
-        if self.buffer_menu_subcomand {
-            self.buffer_menu_subcomand = false; // Reset the flag
+        if self.menu_status.is_active(MenuType::File) {
+            self.menu_status.reset(); // Reset the flag
             match key {
                 KeyCode::Char('w') => {
                     // Clear the buffer
@@ -663,12 +678,12 @@ impl Editor {
             }
 
             KeyCode::Char(':') => {
-                self.buffer_menu_subcomand = true;
+                self.menu_status.set_active_menu(MenuType::File);
                 return Ok(false);
             }
 
             KeyCode::Char('"') => {
-                self.ai_menu_subcomand = true;
+                self.menu_status.set_active_menu(MenuType::AI);
                 return Ok(false);
             }
 
@@ -736,7 +751,13 @@ impl Editor {
             // Quit
             KeyCode::Char('q') => Ok(true),
 
-            _ => Ok(false),
+            _ => {
+                self.menu_status.reset();
+                self.ai_menu_subcomand = false;
+                self.waiting_for_g_command = false;
+                self.buffer_menu_subcomand = false;
+                Ok(false)
+            }
         }
     }
 
@@ -773,7 +794,13 @@ impl Editor {
             KeyCode::Down => self.move_cursor_down(),
             KeyCode::Left => self.move_cursor_left(),
             KeyCode::Right => self.move_cursor_right(),
-            _ => Ok(false),
+            _ => {
+                self.menu_status.reset();
+                self.ai_menu_subcomand = false;
+                self.waiting_for_g_command = false;
+                self.buffer_menu_subcomand = false;
+                Ok(false)
+            }
         }
     }
 
@@ -832,7 +859,13 @@ impl Editor {
             KeyCode::Char('j') => self.move_cursor_down(),
             KeyCode::Char('h') => self.move_cursor_left(),
             KeyCode::Char('l') => self.move_cursor_right(),
-            _ => Ok(false),
+            _ => {
+                self.menu_status.reset();
+                self.ai_menu_subcomand = false;
+                self.waiting_for_g_command = false;
+                self.buffer_menu_subcomand = false;
+                Ok(false)
+            }
         }
     }
 

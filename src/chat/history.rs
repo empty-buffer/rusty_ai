@@ -18,7 +18,6 @@ impl History {
             fs::create_dir_all(history_dir)?;
         }
 
-        // asd asd
         let _file = OpenOptions::new()
             .create(true)
             .write(true)

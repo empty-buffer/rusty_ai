@@ -495,6 +495,8 @@ fn draw_request_state_line_to_buffer(
         }
     };
 
+    // let menu = editor.get_menu_state();
+
     // Fill message line
     for (x, ch) in help_msg.chars().enumerate() {
         if x >= render_state.term_width as usize {

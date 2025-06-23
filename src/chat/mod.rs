@@ -4,12 +4,13 @@ mod error;
 mod models;
 
 use std::env;
-// use std::ascii::AsciiExt;
 use std::{collections::HashMap, path::PathBuf};
 
 use genai::chat::{ChatMessage, ChatRequest};
 use genai::Client;
-use rusty_ollama::Ollama;
+
+use ollama_rs::{generation, Ollama};
+use ollama_rs::generation::completion::request::GenerationRequest;
 
 use crate::files::{change_dir, list_current_dir, load_file};
 use crate::Result;
@@ -25,7 +26,7 @@ pub enum Model {
 impl From<Model> for &str {
     fn from(value: Model) -> Self {
         match value {
-            Model::OLLAMA => "qwen3:32b-q4_K_M",
+            Model::OLLAMA => "gemma3:27b",
             Model::OPENAI => "gpt-4.1-mini",
             Model::ANTROPIC => todo!(),
         }
@@ -35,7 +36,7 @@ impl From<Model> for &str {
 impl From<Model> for String {
     fn from(value: Model) -> Self {
         match value {
-            Model::OLLAMA => "qwen3:32b-q4_K_M".to_owned(),
+            Model::OLLAMA => "gemma3:27b".to_owned(),
             Model::OPENAI => "gpt-4o-mini".to_owned(),
             Model::ANTROPIC => todo!(),
         }
@@ -46,7 +47,7 @@ impl core::fmt::Display for Model {
     fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
         write!(fmt, "{self:?}")
     }
-}
+} 
 
 #[derive(Debug, Clone)]
 pub struct ChatContext {
@@ -92,12 +93,9 @@ impl ChatContext {
             Err(e) => return Err(crate::error::Error::Custom(e.to_string())),
         };
 
-        let mut client = Ollama::new(endpoint, model)?;
+        let ollama = Ollama::new("http://localhost".to_string(), 11434);
 
-        // client.stream_generate(prompt)
-
-        // client.context
-        let response = client.generate(content).await?;
+        let response =  ollama.generate( GenerationRequest::new(model.into(), content)).await?;
         Ok(response.response)
     }
-}
+} 

@@ -1,5 +1,5 @@
 use derive_more::From;
-use rusty_ollama::OllamaError;
+use ollama_rs::error::OllamaError;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
