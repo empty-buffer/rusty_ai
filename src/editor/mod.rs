@@ -51,6 +51,8 @@ pub struct Editor {
     needs_response_check: bool,
 
     waiting_for_g_command: bool,
+    ai_menu_subcomand: bool,
+    buffer_menu_subcomand: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +106,9 @@ impl Editor {
             // Track if we need to check for responses
             needs_response_check: false,
 
-            waiting_for_g_command: false, // Initialize to false
+            waiting_for_g_command: false,
+            ai_menu_subcomand: false,
+            buffer_menu_subcomand: false, // Initialize to false
         }
     }
 
@@ -510,8 +514,8 @@ impl Editor {
 
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
         // Handle special key combinations first
-        // if modifiers.contains(KeyModifiers::SUPER) {
-        if modifiers.contains(KeyModifiers::ALT) {
+        if modifiers.contains(KeyModifiers::SUPER) {
+            // if modifiers.contains(KeyModifiers::ALT) {
             match key {
                 KeyCode::Char('a') => {
                     self.send_to_antropic()?;
@@ -608,11 +612,63 @@ impl Editor {
             }
         }
 
+        if self.ai_menu_subcomand {
+            self.ai_menu_subcomand = false; // Reset the flag
+
+            match key {
+                KeyCode::Char('a') => {
+                    self.send_to_antropic()?;
+                    return Ok(false);
+                }
+                KeyCode::Char('o') => {
+                    self.send_to_openai()?;
+                    return Ok(false);
+                }
+                KeyCode::Char('l') => {
+                    self.send_to_ollama()?;
+                    return Ok(false);
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        if self.buffer_menu_subcomand {
+            self.buffer_menu_subcomand = false; // Reset the flag
+            match key {
+                KeyCode::Char('w') => {
+                    // Clear the buffer
+                    self.buffer = Rope::new();
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                    self.modified = false;
+
+                    if self.file_path.is_some() {
+                        self.save_file()?;
+                    }
+
+                    // Update syntax highlighting for the empty buffer
+                    self.update_syntax_highlighting();
+
+                    return Ok(false);
+                }
+                _ => return Ok(false),
+            }
+        }
         match key {
             KeyCode::Char('x') => return self.select_current_line(),
 
             KeyCode::Char('g') => {
                 self.waiting_for_g_command = true;
+                return Ok(false);
+            }
+
+            KeyCode::Char(':') => {
+                self.buffer_menu_subcomand = true;
+                return Ok(false);
+            }
+
+            KeyCode::Char('"') => {
+                self.ai_menu_subcomand = true;
                 return Ok(false);
             }
 
