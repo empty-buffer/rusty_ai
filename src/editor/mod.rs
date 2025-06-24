@@ -1,6 +1,6 @@
 use crate::error::Result;
 
-mod menu;
+pub mod menu;
 
 use menu::MenuType;
 
@@ -55,11 +55,8 @@ pub struct Editor {
     // Track if we need to check for responses
     needs_response_check: bool,
 
+    show_help_menu: bool,
     menu_status: menu::CommandsMenu,
-
-    waiting_for_g_command: bool,
-    ai_menu_subcomand: bool,
-    buffer_menu_subcomand: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,12 +115,21 @@ impl Editor {
             // Track if we need to check for responses
             needs_response_check: false,
 
+            show_help_menu: false,
             menu_status: menu::CommandsMenu::default(),
-
-            waiting_for_g_command: false,
-            ai_menu_subcomand: false,
-            buffer_menu_subcomand: false, // Initialize to false
         }
+    }
+
+    pub fn is_help_popup_active(&self) -> bool {
+        self.show_help_menu
+    }
+
+    pub fn toggle_help_popup(&mut self) {
+        self.show_help_menu = !self.show_help_menu;
+    }
+
+    pub fn get_help_content(&self) -> Option<&[&str]> {
+        self.menu_status.show_menu()
     }
 
     pub fn get_syntax_cache_dirty_lines(&self, real_line_number: usize) -> bool {
@@ -366,7 +372,7 @@ impl Editor {
     }
 
     pub fn is_waiting_for_command(&self) -> bool {
-        self.waiting_for_g_command
+        self.menu_status.is_active_menu()
     }
 
     fn move_to_end_of_line(&mut self) -> Result<bool> {
@@ -612,8 +618,8 @@ impl Editor {
             }
         }
 
-        if self.waiting_for_g_command {
-            self.waiting_for_g_command = false; // Reset the flag
+        if self.menu_status.is_active(MenuType::GoTo) {
+            self.menu_status.reset(); // Reset the flag
 
             // Handle the key after 'g'
             match key {
@@ -628,7 +634,6 @@ impl Editor {
 
         if self.menu_status.is_active(MenuType::AI) {
             self.menu_status.reset(); // Reset the flag
-            println!("AI MENU");
 
             match key {
                 KeyCode::Char('a') => {
@@ -666,6 +671,11 @@ impl Editor {
 
                     return Ok(false);
                 }
+
+                KeyCode::Char('s') => {
+                    self.save_file()?;
+                    return Ok(false);
+                }
                 _ => return Ok(false),
             }
         }
@@ -673,7 +683,7 @@ impl Editor {
             KeyCode::Char('x') => return self.select_current_line(),
 
             KeyCode::Char('g') => {
-                self.waiting_for_g_command = true;
+                self.menu_status.set_active_menu(MenuType::GoTo);
                 return Ok(false);
             }
 
@@ -753,9 +763,6 @@ impl Editor {
 
             _ => {
                 self.menu_status.reset();
-                self.ai_menu_subcomand = false;
-                self.waiting_for_g_command = false;
-                self.buffer_menu_subcomand = false;
                 Ok(false)
             }
         }
@@ -796,17 +803,14 @@ impl Editor {
             KeyCode::Right => self.move_cursor_right(),
             _ => {
                 self.menu_status.reset();
-                self.ai_menu_subcomand = false;
-                self.waiting_for_g_command = false;
-                self.buffer_menu_subcomand = false;
                 Ok(false)
             }
         }
     }
 
     fn handle_select_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-        if self.waiting_for_g_command {
-            self.waiting_for_g_command = false; // Reset the flag
+        if self.menu_status.is_active(MenuType::GoTo) {
+            self.menu_status.reset();
 
             // Handle the key after 'g'
             match key {
@@ -822,8 +826,9 @@ impl Editor {
         match key {
             KeyCode::Char('x') => return self.select_current_line(),
 
+            // Set GoTo Menu Is Active
             KeyCode::Char('g') => {
-                self.waiting_for_g_command = true;
+                self.menu_status.set_active_menu(MenuType::GoTo);
                 return Ok(false);
             }
 
@@ -861,9 +866,6 @@ impl Editor {
             KeyCode::Char('l') => self.move_cursor_right(),
             _ => {
                 self.menu_status.reset();
-                self.ai_menu_subcomand = false;
-                self.waiting_for_g_command = false;
-                self.buffer_menu_subcomand = false;
                 Ok(false)
             }
         }

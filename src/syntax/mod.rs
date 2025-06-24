@@ -10,6 +10,13 @@ use tree_sitter_language::LanguageFn;
 
 pub mod cache;
 
+struct CodeBlock {
+    language: String,
+    start: usize,
+    end: usize,
+    code: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
     Normal,
@@ -52,7 +59,7 @@ impl SyntaxHighlighter {
         // Add other languages as needed
         // ... (Python, JavaScript, etc.)
 
-        let md_code_block_regex = Regex::new(r"```(\w+)").unwrap();
+        let md_code_block_regex = Regex::new(r"(?m)^```([\w\+\-]+)").unwrap();
 
         Ok(Self {
             parser: RefCell::new(parser),
@@ -62,237 +69,152 @@ impl SyntaxHighlighter {
         })
     }
 
-    pub fn detect_language_from_content(&self, buffer: &Rope) -> Option<&LanguageFn> {
-        let content = buffer.to_string();
+    // pub fn detect_language_from_content(&self, buffer: &Rope) -> Option<&LanguageFn> {
+    //     let content = buffer.to_string();
 
-        // Check for markdown code blocks
-        if let Some(captures) = self.md_code_block_regex.captures(&content) {
-            if let Some(lang_match) = captures.get(1) {
-                let lang_name = lang_match.as_str().to_lowercase();
-                return self.languages.get(&lang_name);
-            }
-        }
+    //     // Check for markdown code blocks
+    //     if let Some(captures) = self.md_code_block_regex.captures(&content) {
+    //         if let Some(lang_match) = captures.get(1) {
+    //             let lang_name = lang_match.as_str().to_lowercase();
+    //             return self.languages.get(&lang_name);
+    //         }
+    //     }
 
-        None
-    }
+    //     None
+    // }
 
     pub fn detect_language(&self, filename: &str) -> Option<&LanguageFn> {
         let extension = Path::new(filename)
             .extension()
             .and_then(|ext| ext.to_str())
-            .unwrap_or("");
+            .unwrap_or("rust");
 
         self.languages.get(extension)
     }
 
-    pub fn highlight_bufferv1(
-        &self,
-        buffer: &Rope,
-        language: Option<&LanguageFn>,
-    ) -> Vec<(Range<usize>, Style)> {
-        // Default to no highlighting if language not specified
-        let language = match language {
-            Some(lang) => lang,
-            None => return Vec::new(),
-        };
+    fn extract_code_blocks(&self, text: &str) -> Vec<CodeBlock> {
+        let mut blocks = Vec::new();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_code_block = false;
+        let mut current_lang = "";
+        let mut code_start_byte = 0;
+        let mut code_buffer = Vec::new();
 
-        let mut parser = self.parser.borrow_mut();
-        parser
-            .set_language(&(*language).into())
-            .unwrap_or_else(|_| {
-                // Return empty result if language fails to set
-                return;
-            });
+        let mut offset = 0; // byte offset to track where lines start
 
-        // Convert rope to string (this can be optimized for large files)
-        let text = buffer.to_string();
+        for line in &lines {
+            if line.starts_with("```") {
+                if !in_code_block {
+                    // Entering a code block
+                    if let Some(caps) = self.md_code_block_regex.captures(line) {
+                        if let Some(lang_match) = caps.get(1) {
+                            current_lang = lang_match.as_str();
+                        } else {
+                            current_lang = "";
+                        }
+                    } else {
+                        current_lang = "";
+                    }
+                    in_code_block = true;
+                    code_start_byte = offset + line.len() + 1; // start after this line + newline
+                    code_buffer.clear();
+                } else {
+                    // Exiting code block
+                    let code_len = code_buffer
+                        .iter()
+                        .map(|l: &&str| l.len() + 1)
+                        .sum::<usize>(); // Add newlines too
+                    let code_end_byte = code_start_byte + code_len;
 
-        // Parse the buffer
-        let tree = match parser.parse(&text, None) {
-            Some(tree) => tree,
-            None => return Vec::new(),
-        };
+                    blocks.push(CodeBlock {
+                        language: current_lang.to_lowercase(),
+                        start: code_start_byte,
+                        end: code_end_byte,
+                        code: code_buffer.join("\n"),
+                    });
 
-        // Get query for this language
-        let query = match self.queries.get(&(*language).into()) {
-            Some(query) => query,
-            None => return Vec::new(),
-        };
-
-        let mut cursor = QueryCursor::new();
-        let mut highlights = Vec::new();
-
-        let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
-        // }
-
-        // let matches = cursor.matches(query, tree.root_node(), text.as_bytes());
-        while let Some(match_) = matches.next() {
-            // for match_ in matches {
-            for capture in match_.captures {
-                let node = capture.node;
-
-                // Skip zero-width nodes
-                if node.start_byte() == node.end_byte() {
-                    continue;
+                    in_code_block = false;
+                    current_lang = "";
                 }
-
-                let range = node.start_byte()..node.end_byte();
-
-                // Map capture names to styles
-                let style = match query.capture_names()[capture.index as usize] {
-                    "keyword" => Style::Keyword,
-                    "function" | "function.macro" => Style::Function,
-                    "type" => Style::Type,
-                    "string" => Style::String,
-                    "number" => Style::Number,
-                    "comment" => Style::Comment,
-                    "variable" | "variable.field" | "variable.builtin" => Style::Variable,
-                    "constant" => Style::Constant,
-                    "operator" => Style::Operator,
-                    _ => Style::Normal,
-                };
-
-                highlights.push((range, style));
+            } else if in_code_block {
+                code_buffer.push(*line);
             }
+
+            offset += line.len() + 1; // +1 for newline
         }
 
-        highlights
+        blocks
     }
-
-    // pub fn convert_highlights_to_char_ranges(
-    //     &self,
-    //     buffer: &Rope,
-    //     highlights: Vec<(Range<usize>, Style)>,
-    // ) -> Vec<(Range<usize>, Style)> {
-    //     highlights
-    //         .into_iter()
-    //         .map(|(range, style)| {
-    //             let start_char = buffer.byte_to_char(range.start);
-    //             let end_char = buffer.byte_to_char(range.end);
-    //             (start_char..end_char, style)
-    //         })
-    //         .collect()
-    // }
 
     pub fn highlight_buffer(
         &self,
         buffer: &Rope,
         language: Option<&LanguageFn>,
     ) -> Vec<(Range<usize>, Style)> {
-        // Try to detect language from content if none specified
-        let content_language = self.detect_language_from_content(buffer);
-        let language = language.or(content_language);
-
-        // Default to no highlighting if language not specified
-        let language = match language {
-            Some(lang) => lang,
-            None => return Vec::new(),
-        };
-
-        let mut parser = self.parser.borrow_mut();
-        parser
-            .set_language(&(*language).into())
-            .unwrap_or_else(|_| {
-                // Return empty result if language fails to set
-                return;
-            });
-
-        // Convert rope to string (this can be optimized for large files)
         let text = buffer.to_string();
 
-        // If this is a Markdown file with code blocks, extract the code block content
-        let code_text = if self.md_code_block_regex.is_match(&text) {
-            self.extract_code_block(&text)
-        } else {
-            text.clone()
-        };
+        // For Markdown, extract all code blocks with language and positions
+        let code_blocks = self.extract_code_blocks(&text);
 
-        // Parse the buffer
-        let tree = match parser.parse(&code_text, None) {
-            Some(tree) => tree,
-            None => return Vec::new(),
-        };
-
-        // Get query for this language
-        let query = match self.queries.get(&(*language).into()) {
-            Some(query) => query,
-            None => return Vec::new(),
-        };
-
-        let mut cursor = QueryCursor::new();
         let mut highlights = Vec::new();
 
-        let mut matches = cursor.matches(query, tree.root_node(), code_text.as_bytes());
-
-        // Process matches
-        while let Some(match_) = matches.next() {
-            for capture in match_.captures {
-                let node = capture.node;
-
-                // Skip zero-width nodes
-                if node.start_byte() == node.end_byte() {
-                    continue;
+        // Highlight inside each code block
+        for block in code_blocks {
+            // Check if we have this language registered
+            if let Some(lang_fn) = self.languages.get(&block.language) {
+                // Setup parser
+                let mut parser = self.parser.borrow_mut();
+                if parser.set_language(&(*lang_fn).into()).is_err() {
+                    continue; // skip unknown languages
                 }
 
-                let range = node.start_byte()..node.end_byte();
+                // Parse the code block
+                if let Some(tree) = parser.parse(&block.code, None) {
+                    if let Some(query) = self.queries.get(&(*lang_fn).into()) {
+                        let mut cursor = QueryCursor::new();
 
-                // Map capture names to styles
-                let style = match query.capture_names()[capture.index as usize] {
-                    "keyword" => Style::Keyword,
-                    "function" | "function.macro" => Style::Function,
-                    "type" => Style::Type,
-                    "string" => Style::String,
-                    "number" => Style::Number,
-                    "comment" => Style::Comment,
-                    "variable" | "variable.field" | "variable.builtin" => Style::Variable,
-                    "constant" => Style::Constant,
-                    "operator" => Style::Operator,
-                    _ => Style::Normal,
-                };
+                        let mut matches =
+                            cursor.matches(query, tree.root_node(), block.code.as_bytes());
 
-                // If this is a Markdown file, adjust the range to account for code block position
-                let adjusted_range = if self.md_code_block_regex.is_match(&text) {
-                    self.adjust_range_for_code_block(&text, range)
-                } else {
-                    range
-                };
+                        while let Some(match_) = matches.next() {
+                            for capture in match_.captures {
+                                let node = capture.node;
+                                if node.start_byte() == node.end_byte() {
+                                    continue;
+                                }
+                                let range = node.start_byte()..node.end_byte();
 
-                highlights.push((adjusted_range, style));
-            }
-        }
+                                let style = match query.capture_names()[capture.index as usize] {
+                                    "keyword" => Style::Keyword,
+                                    "function" | "function.macro" => Style::Function,
+                                    "type" => Style::Type,
+                                    "string" => Style::String,
+                                    "number" => Style::Number,
+                                    "comment" => Style::Comment,
+                                    "variable" | "variable.field" | "variable.builtin" => {
+                                        Style::Variable
+                                    }
+                                    "constant" => Style::Constant,
+                                    "operator" => Style::Operator,
+                                    _ => Style::Normal,
+                                };
 
-        highlights
-    }
+                                // Shift ranges by code block start offset
+                                let adjusted_range =
+                                    (range.start + block.start)..(range.end + block.start);
 
-    fn extract_code_block(&self, text: &str) -> String {
-        let lines: Vec<&str> = text.lines().collect();
-        let mut in_code_block = false;
-        let mut code_lines = Vec::new();
-        let mut language = "";
-
-        for line in lines {
-            if line.starts_with("```") && !in_code_block {
-                // Capture language identifier
-                if let Some(captures) = self.md_code_block_regex.captures(line) {
-                    if let Some(lang_match) = captures.get(1) {
-                        language = lang_match.as_str();
+                                highlights.push((adjusted_range, style));
+                            }
+                        }
                     }
                 }
-                in_code_block = true;
-                continue;
             }
-
-            if line.starts_with("```") && in_code_block {
-                in_code_block = false;
-                continue;
-            }
-
-            if in_code_block {
-                code_lines.push(line);
-            }
+            // else maybe treat as normal text
         }
 
-        code_lines.join("\n")
+        // Optionally add highlighting for Markdown syntax outside code blocks
+
+        highlights
     }
 
     // Adjust highlight ranges to account for code block position in Markdown
@@ -334,3 +256,108 @@ impl SyntaxHighlighter {
             .collect()
     }
 }
+
+// pub fn highlight_bufferv1(
+//     &self,
+//     buffer: &Rope,
+//     language: Option<&LanguageFn>,
+// ) -> Vec<(Range<usize>, Style)> {
+//     // Default to no highlighting if language not specified
+//     let language = match language {
+//         Some(lang) => lang,
+//         None => return Vec::new(),
+//     };
+
+//     let mut parser = self.parser.borrow_mut();
+//     parser
+//         .set_language(&(*language).into())
+//         .unwrap_or_else(|_| {
+//             // Return empty result if language fails to set
+//             return;
+//         });
+
+//     // Convert rope to string (this can be optimized for large files)
+//     let text = buffer.to_string();
+
+//     // Parse the buffer
+//     let tree = match parser.parse(&text, None) {
+//         Some(tree) => tree,
+//         None => return Vec::new(),
+//     };
+
+//     // Get query for this language
+//     let query = match self.queries.get(&(*language).into()) {
+//         Some(query) => query,
+//         None => return Vec::new(),
+//     };
+
+//     let mut cursor = QueryCursor::new();
+//     let mut highlights = Vec::new();
+
+//     let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
+//     // }
+
+//     // let matches = cursor.matches(query, tree.root_node(), text.as_bytes());
+//     while let Some(match_) = matches.next() {
+//         // for match_ in matches {
+//         for capture in match_.captures {
+//             let node = capture.node;
+
+//             // Skip zero-width nodes
+//             if node.start_byte() == node.end_byte() {
+//                 continue;
+//             }
+
+//             let range = node.start_byte()..node.end_byte();
+
+//             // Map capture names to styles
+//             let style = match query.capture_names()[capture.index as usize] {
+//                 "keyword" => Style::Keyword,
+//                 "function" | "function.macro" => Style::Function,
+//                 "type" => Style::Type,
+//                 "string" => Style::String,
+//                 "number" => Style::Number,
+//                 "comment" => Style::Comment,
+//                 "variable" | "variable.field" | "variable.builtin" => Style::Variable,
+//                 "constant" => Style::Constant,
+//                 "operator" => Style::Operator,
+//                 _ => Style::Normal,
+//             };
+
+//             highlights.push((range, style));
+//         }
+//     }
+
+//     highlights
+// }
+
+// fn extract_code_block1(&self, text: &str) -> String {
+//     let lines: Vec<&str> = text.lines().collect();
+//     let mut in_code_block = false;
+//     let mut code_lines = Vec::new();
+//     let mut language = "";
+
+//     for line in lines {
+//         if line.starts_with("```") && !in_code_block {
+//             // Capture language identifier
+//             if let Some(captures) = self.md_code_block_regex.captures(line) {
+//                 if let Some(lang_match) = captures.get(1) {
+//                     language = lang_match.as_str();
+//                 }
+//             }
+//             in_code_block = true;
+//             continue;
+//         }
+
+//         if line.starts_with("```") && in_code_block {
+//             in_code_block = false;
+//             continue;
+//         }
+
+//         if in_code_block {
+//             code_lines.push(line);
+//         }
+//     }
+
+//     code_lines.join("\n")
+// }

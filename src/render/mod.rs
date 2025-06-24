@@ -1,6 +1,8 @@
 use crate::editor::{Editor, Mode, RequestState};
 use crate::error::Result;
 
+use crate::editor::menu::MenuType;
+
 use crossterm::{
     cursor::MoveTo,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
@@ -395,6 +397,66 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
     Ok(())
 }
 
+fn draw_help_popup_to_buffer(render_state: &mut RenderState, commands: &[&str]) -> Result<()> {
+    let max_line_length = commands.iter().map(|line| line.len()).max().unwrap_or(0);
+
+    // Calculate popup box dimensions: width & height
+    let popup_width = max_line_length + 4; // padding + borders
+    let popup_height = commands.len() + 2; // commands + top & bottom border
+
+    // Starting position - bottom right corner with some padding
+    let term_width = render_state.term_width as usize;
+    let term_height = render_state.term_height as usize;
+
+    let start_x = if term_width > popup_width + 1 {
+        term_width - popup_width - 1
+    } else {
+        0
+    };
+    let start_y = if term_height > popup_height + 1 {
+        term_height - popup_height - 1
+    } else {
+        0
+    };
+
+    let fg = Color::White;
+    let bg = Some(Color::DarkGrey);
+
+    // Draw border: top line
+    render_state.set_cell(start_x, start_y, '┌', fg, bg);
+    for x in (start_x + 1)..(start_x + popup_width - 1) {
+        render_state.set_cell(x, start_y, '─', fg, bg);
+    }
+    render_state.set_cell(start_x + popup_width - 1, start_y, '┐', fg, bg);
+
+    // Draw middle lines (with sides)
+    for (i, cmd) in commands.iter().enumerate() {
+        let y = start_y + 1 + i;
+        render_state.set_cell(start_x, y, '│', fg, bg);
+
+        for (j, ch) in cmd.chars().enumerate() {
+            render_state.set_cell(start_x + 1 + j, y, ch, fg, bg);
+        }
+
+        // fill rest with spaces if the line is shorter than popup_width
+        for x in (start_x + 1 + cmd.len())..(start_x + popup_width - 1) {
+            render_state.set_cell(x, y, ' ', fg, bg);
+        }
+
+        render_state.set_cell(start_x + popup_width - 1, y, '│', fg, bg);
+    }
+
+    // Draw bottom line
+    let bottom_y = start_y + popup_height - 1;
+    render_state.set_cell(start_x, bottom_y, '└', fg, bg);
+    for x in (start_x + 1)..(start_x + popup_width - 1) {
+        render_state.set_cell(x, bottom_y, '─', fg, bg);
+    }
+    render_state.set_cell(start_x + popup_width - 1, bottom_y, '┘', fg, bg);
+
+    Ok(())
+}
+
 fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
     let row = render_state.term_height as usize - 2;
 
@@ -403,14 +465,11 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
     let modified_indicator = if editor.is_modified() { " [+] " } else { " " };
 
     // Mode indicator
-    let mode = if editor.is_waiting_for_command() {
-        "WAITING FOR COMMAND"
-    } else {
-        match editor.get_mode() {
-            Mode::Normal => "NORMAL",
-            Mode::Insert => "INSERT",
-            Mode::Select => "SELECT",
-        }
+    let mode = match editor.get_mode() {
+        Mode::Normal => "NORMAL",
+        Mode::Insert => "INSERT",
+        Mode::Select => "SELECT",
+        // change to fmt of the type for MenuTypes
     };
 
     // Get cursor position
@@ -447,6 +506,13 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
         render_state.set_cell(x, row, ' ', Color::Black, Some(Color::White));
     }
 
+    if editor.is_waiting_for_command() {
+        let help = editor.get_help_content();
+        //
+        // handle error
+        let _ = draw_help_popup_to_buffer(render_state, help.unwrap());
+    }
+
     Ok(())
 }
 
@@ -474,6 +540,9 @@ fn draw_message_line_to_buffer(editor: &Editor, render_state: &mut RenderState) 
     for x in help_msg.len()..render_state.term_width as usize {
         render_state.set_cell(x, row, ' ', Color::Reset, None);
     }
+
+    // if editor.is_help_popup_active() {
+    // Draw the popup help window
 
     Ok(())
 }
