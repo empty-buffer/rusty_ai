@@ -1,5 +1,6 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 
+pub mod filepicker;
 pub mod menu;
 
 use menu::MenuType;
@@ -15,6 +16,7 @@ use crate::syntax::{Style, SyntaxHighlighter};
 use clipboard::{ClipboardContext, ClipboardProvider};
 
 use crate::async_handler::{AsyncCommandHandler, EditorState};
+use std::num::IntErrorKind;
 use std::sync::{Arc, Mutex};
 
 use std::fs;
@@ -28,16 +30,14 @@ use tokio::runtime::Runtime;
 
 use crate::syntax::cache::SyntaxCache;
 
-// static RUNTIME: Lazy<Runtime> =
-//     Lazy::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
-
-// #[derive(Debug, Clone)]
+// #[derive(Debug)]
 pub struct Editor {
     buffer: Rope,
     cursor_row: usize,
     cursor_col: usize,
     mode: Mode,
-    file_path: Option<String>,
+
+    history: History,
     modified: bool,
     chat_context: ChatContext,
 
@@ -56,7 +56,7 @@ pub struct Editor {
     needs_response_check: bool,
 
     show_help_menu: bool,
-    menu_status: menu::CommandsMenu,
+    pub menu_status: menu::CommandsMenu,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,11 +74,8 @@ pub enum Mode {
 }
 
 impl Editor {
-    pub fn new() -> Self {
-        if let Ok(dd) = History::new() {
-        } else {
-            println!("{:?}", History::new().err());
-        }
+    pub fn new() -> Result<Self> {
+        let current_file = History::new()?;
 
         let chat_context = ChatContext::new().unwrap();
         let syntax_highlighter = SyntaxHighlighter::new().ok();
@@ -92,12 +89,12 @@ impl Editor {
 
         let mut buffer = Rope::new();
         buffer.insert(0, "\n");
-        Self {
+        Ok(Self {
             buffer,
             cursor_row: 0,
             cursor_col: 0,
             mode: Mode::Normal,
-            file_path: None,
+            history: current_file,
             modified: false,
 
             syntax_cache: SyntaxCache::new(),
@@ -117,7 +114,7 @@ impl Editor {
 
             show_help_menu: false,
             menu_status: menu::CommandsMenu::default(),
-        }
+        })
     }
 
     pub fn is_help_popup_active(&self) -> bool {
@@ -128,7 +125,7 @@ impl Editor {
         self.show_help_menu = !self.show_help_menu;
     }
 
-    pub fn get_help_content(&self) -> Option<&[&str]> {
+    pub fn get_help_content(&self) -> (Option<String>, Option<Vec<String>>) {
         self.menu_status.show_menu()
     }
 
@@ -176,10 +173,9 @@ impl Editor {
         }
 
         if let Some(highlighter) = &self.syntax_highlighter {
-            let language = self
-                .file_path
-                .as_ref()
-                .and_then(|path| highlighter.detect_language(path));
+            let language = highlighter.detect_language(&self.history.file_path);
+            // .as_ref()
+            // .and_then(|path| highlighter.detect_language(path));
 
             // Only perform full highlighting when necessary
             let highlights = highlighter.highlight_buffer(&self.buffer, language);
@@ -188,10 +184,15 @@ impl Editor {
         }
     }
 
-    pub fn open_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let content = fs::read_to_string(path.as_ref())?;
+    pub fn open_file(&mut self) -> Result<()> {
+        // let file = match self.hisxfile_path.as_ref() {
+        //     Some(f) => f,
+        //     None => return Err(Error::Custom("editor: can't find file".to_string())),
+        // };
+
+        let content = fs::read_to_string(&self.history.file_path)?;
         self.buffer = Rope::from_str(&content);
-        self.file_path = Some(path.as_ref().to_string_lossy().to_string());
+        // self.file_path = Some(file.to_string());
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.modified = false;
@@ -311,13 +312,10 @@ impl Editor {
     }
 
     pub fn save_file(&mut self) -> Result<()> {
-        if let Some(path) = &self.file_path {
-            fs::write(path, self.buffer.to_string())?;
-            self.modified = false;
-            Ok(())
-        } else {
-            Err("No file path specified".into())
-        }
+        self.history.save_file(self.buffer.to_string())?;
+        self.modified = false;
+
+        Ok(())
     }
 
     // Get the current request state
@@ -373,6 +371,9 @@ impl Editor {
 
     pub fn is_waiting_for_command(&self) -> bool {
         self.menu_status.is_active_menu()
+            // && !self.menu_status.is_active(MenuType::FilePicker)
+            // && !self.menu_status.is_active(MenuType::FileSaveAs)
+            && !self.menu_status.is_file_picker_active()
     }
 
     fn move_to_end_of_line(&mut self) -> Result<bool> {
@@ -533,45 +534,6 @@ impl Editor {
     }
 
     pub fn handle_key(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-        // Handle special key combinations first
-        if modifiers.contains(KeyModifiers::SUPER) {
-            // if modifiers.contains(KeyModifiers::ALT) {
-            match key {
-                KeyCode::Char('a') => {
-                    self.send_to_antropic()?;
-                    return Ok(false);
-                }
-                KeyCode::Char('o') => {
-                    self.send_to_openai()?;
-                    return Ok(false);
-                }
-                KeyCode::Char('l') => {
-                    self.send_to_ollama()?;
-                    return Ok(false);
-                }
-                KeyCode::Char('w') => {
-                    // Clear the buffer
-                    self.buffer = Rope::new();
-                    self.cursor_row = 0;
-                    self.cursor_col = 0;
-                    self.modified = false;
-
-                    if self.file_path.is_some() {
-                        self.save_file()?;
-                    }
-
-                    // Update syntax highlighting for the empty buffer
-                    self.update_syntax_highlighting();
-
-                    return Ok(false);
-                }
-
-                _ => {
-                    println!("{:?}", key);
-                }
-            }
-        }
-
         // Handle regular keys based on mode
         match self.mode {
             Mode::Normal => self.handle_normal_mode(key, modifiers),
@@ -580,7 +542,7 @@ impl Editor {
         }
     }
 
-    fn send_to_antropic(&mut self) -> Result<()> {
+    fn send_to_anthropic(&mut self) -> Result<()> {
         self.send_to_api(Model::ANTROPIC)
     }
 
@@ -618,17 +580,116 @@ impl Editor {
             }
         }
 
+        if self.menu_status.file_picker_state(filepicker::Action::Save) {
+            match key {
+                KeyCode::Char(c) => {
+                    // Insert character at cursor position
+                    self.menu_status.file_picker.insert_char(c);
+
+                    return Ok(false);
+                }
+                KeyCode::Backspace => {
+                    self.menu_status.file_picker.delete_previous_char();
+
+                    return Ok(false);
+                }
+                KeyCode::Delete => {
+                    self.menu_status.file_picker.delete_current_char();
+
+                    return Ok(false);
+                }
+                KeyCode::Left => {
+                    self.menu_status.file_picker.move_cursor_pos_left();
+
+                    return Ok(false);
+                }
+                KeyCode::Right => {
+                    self.menu_status.file_picker.move_cursor_pos_right();
+
+                    return Ok(false);
+                }
+                KeyCode::Enter => {
+                    let filename = self.menu_status.file_picker.get_input();
+                    if !filename.is_empty() {
+                        // Save to file
+                        let content = self.buffer.to_string();
+                        self.history.save_to_file(filename.to_string(), content)?;
+
+                        let content = self.history.current_file_content()?;
+
+                        self.buffer = Rope::from_str(&content);
+                        self.cursor_row = 0;
+                        self.cursor_col = 0;
+                        self.modified = false;
+
+                        // Update syntax highlighting
+                        self.update_syntax_highlighting();
+
+                        self.modified = false;
+                    }
+
+                    self.menu_status.reset();
+                    return Ok(false);
+                }
+                KeyCode::Esc => {
+                    self.menu_status.reset();
+                    return Ok(false);
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        if self.menu_status.file_picker_state(filepicker::Action::Load) {
+            match key {
+                KeyCode::Up => {
+                    self.menu_status.file_picker.move_file_picker_up();
+                    return Ok(false);
+                }
+                KeyCode::Down => {
+                    self.menu_status.file_picker.move_file_picker_down();
+                    return Ok(false);
+                }
+                KeyCode::Enter => {
+                    if let Some(selected_file) = self.menu_status.file_picker.get_selected_file() {
+                        // load the selected file into editor's buffer
+                        let content = self.history.load_file(selected_file.to_string())?;
+
+                        self.buffer = Rope::from_str(&content);
+                        self.cursor_row = 0;
+                        self.cursor_col = 0;
+                        self.modified = false;
+
+                        // Update file path in history or state if relevant
+                        self.history.file_path = selected_file.to_string();
+
+                        // Update syntax highlighting
+                        self.update_syntax_highlighting();
+                        // self.history.load_file(selected_file.to_string())?;
+                        self.menu_status.reset(); // close popup
+                    }
+                    return Ok(false);
+                }
+                KeyCode::Esc => {
+                    self.menu_status.reset(); // close popup
+                    return Ok(false);
+                }
+                _ => {
+                    // Ignore other keys when file picker active
+                    return Ok(false);
+                }
+            }
+        }
+
+        // Handle the key 'Go To (g)' menu
         if self.menu_status.is_active(MenuType::GoTo) {
             self.menu_status.reset(); // Reset the flag
 
-            // Handle the key after 'g'
             match key {
                 KeyCode::Char('l') => return self.move_to_end_of_line(),
                 KeyCode::Char('h') => return self.move_to_start_of_line(),
                 KeyCode::Char('g') => return self.move_to_start_of_buffer(),
                 KeyCode::Char('e') => return self.move_to_end_of_buffer(),
-                // Add more 'g' commands here as needed
-                _ => return Ok(false), // Ignore other keys
+                _ => return Ok(false),
             }
         }
 
@@ -637,7 +698,7 @@ impl Editor {
 
             match key {
                 KeyCode::Char('a') => {
-                    self.send_to_antropic()?;
+                    self.send_to_anthropic()?;
                     return Ok(false);
                 }
                 KeyCode::Char('o') => {
@@ -652,19 +713,19 @@ impl Editor {
             }
         }
 
+        // Handle the key 'File (:)' menu
         if self.menu_status.is_active(MenuType::File) {
-            self.menu_status.reset(); // Reset the flag
+            self.menu_status.reset();
             match key {
                 KeyCode::Char('w') => {
-                    // Clear the buffer
                     self.buffer = Rope::new();
                     self.cursor_row = 0;
                     self.cursor_col = 0;
                     self.modified = false;
 
-                    if self.file_path.is_some() {
-                        self.save_file()?;
-                    }
+                    // if self.file_path.is_some() {
+                    self.save_file()?;
+                    // }
 
                     // Update syntax highlighting for the empty buffer
                     self.update_syntax_highlighting();
@@ -676,6 +737,20 @@ impl Editor {
                     self.save_file()?;
                     return Ok(false);
                 }
+
+                KeyCode::Char('S') => {
+                    self.menu_status.file_picker.init_file_save_as();
+                    return Ok(false);
+                }
+
+                KeyCode::Char('l') => {
+                    // self.menu_status.set_active_menu(MenuType::FilePicker);
+                    self.menu_status.file_picker.init_file_picker()?;
+                    return Ok(false);
+                }
+
+                KeyCode::Char('q') => return Ok(true),
+
                 _ => return Ok(false),
             }
         }
@@ -687,7 +762,7 @@ impl Editor {
                 return Ok(false);
             }
 
-            KeyCode::Char(':') => {
+            KeyCode::Char(' ') => {
                 self.menu_status.set_active_menu(MenuType::File);
                 return Ok(false);
             }
@@ -759,8 +834,7 @@ impl Editor {
             }
 
             // Quit
-            KeyCode::Char('q') => Ok(true),
-
+            // KeyCode::Char('q') => Ok(true),
             _ => {
                 self.menu_status.reset();
                 Ok(false)
@@ -1157,7 +1231,7 @@ impl Editor {
     }
 
     pub fn get_file_name(&self) -> Option<&str> {
-        self.file_path.as_deref()
+        Some(self.history.file_path.as_str())
     }
 
     fn paste_from_clipboard(&mut self) -> Result<()> {

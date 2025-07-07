@@ -1,7 +1,9 @@
+pub mod menus;
+
+use crate::editor::filepicker::Action;
+use crate::editor::menu::MenuType;
 use crate::editor::{Editor, Mode, RequestState};
 use crate::error::Result;
-
-use crate::editor::menu::MenuType;
 
 use crossterm::{
     cursor::MoveTo,
@@ -153,6 +155,26 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
     draw_status_line_to_buffer(editor, render_state)?;
     // draw_message_line_to_buffer(editor, render_state)?;
     draw_request_state_line_to_buffer(editor, render_state)?;
+
+    if editor.menu_status.file_picker_state(Action::Save) {
+        menus::draw_file_save_as_popup_to_buffer(
+            render_state,
+            &editor.menu_status.get_file_picker_input(),
+            editor.menu_status.get_file_picker_cursor_position(),
+        )?;
+    }
+
+    // Draw file picker popup if active
+    if editor.menu_status.file_picker_state(Action::Load) {
+        let files = &editor.menu_status.get_file_picker_files();
+        let selected_idx = editor.menu_status.file_picker_selected_index();
+        menus::draw_file_picker_popup_to_buffer(render_state, files, selected_idx)?;
+    } else if editor.is_waiting_for_command() {
+        // existing help popup drawing here if needed
+        if let (Some(title), Some(help)) = editor.get_help_content() {
+            menus::draw_help_popup_to_buffer(render_state, title, help)?;
+        }
+    }
 
     // Render the changes to the terminal
     render_buffer_changes(render_state)?;
@@ -397,65 +419,65 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
     Ok(())
 }
 
-fn draw_help_popup_to_buffer(render_state: &mut RenderState, commands: &[&str]) -> Result<()> {
-    let max_line_length = commands.iter().map(|line| line.len()).max().unwrap_or(0);
+// fn draw_help_popup_to_buffer(render_state: &mut RenderState, commands: Vec<String>) -> Result<()> {
+//     let max_line_length = commands.iter().map(|line| line.len()).max().unwrap_or(0);
 
-    // Calculate popup box dimensions: width & height
-    let popup_width = max_line_length + 4; // padding + borders
-    let popup_height = commands.len() + 2; // commands + top & bottom border
+//     // Calculate popup box dimensions: width & height
+//     let popup_width = max_line_length + 4; // padding + borders
+//     let popup_height = commands.len() + 2; // commands + top & bottom border
 
-    // Starting position - bottom right corner with some padding
-    let term_width = render_state.term_width as usize;
-    let term_height = render_state.term_height as usize;
+//     // Starting position - bottom right corner with some padding
+//     let term_width = render_state.term_width as usize;
+//     let term_height = render_state.term_height as usize;
 
-    let start_x = if term_width > popup_width + 1 {
-        term_width - popup_width - 1
-    } else {
-        0
-    };
-    let start_y = if term_height > popup_height + 1 {
-        term_height - popup_height - 1
-    } else {
-        0
-    };
+//     let start_x = if term_width > popup_width + 1 {
+//         term_width - popup_width - 1
+//     } else {
+//         0
+//     };
+//     let start_y = if term_height > popup_height + 1 {
+//         term_height - popup_height - 1
+//     } else {
+//         0
+//     };
 
-    let fg = Color::White;
-    let bg = Some(Color::DarkGrey);
+//     let fg = Color::White;
+//     let bg = Some(Color::DarkGrey);
 
-    // Draw border: top line
-    render_state.set_cell(start_x, start_y, '┌', fg, bg);
-    for x in (start_x + 1)..(start_x + popup_width - 1) {
-        render_state.set_cell(x, start_y, '─', fg, bg);
-    }
-    render_state.set_cell(start_x + popup_width - 1, start_y, '┐', fg, bg);
+//     // Draw border: top line
+//     render_state.set_cell(start_x, start_y, '┌', fg, bg);
+//     for x in (start_x + 1)..(start_x + popup_width - 1) {
+//         render_state.set_cell(x, start_y, '─', fg, bg);
+//     }
+//     render_state.set_cell(start_x + popup_width - 1, start_y, '┐', fg, bg);
 
-    // Draw middle lines (with sides)
-    for (i, cmd) in commands.iter().enumerate() {
-        let y = start_y + 1 + i;
-        render_state.set_cell(start_x, y, '│', fg, bg);
+//     // Draw middle lines (with sides)
+//     for (i, cmd) in commands.iter().enumerate() {
+//         let y = start_y + 1 + i;
+//         render_state.set_cell(start_x, y, '│', fg, bg);
 
-        for (j, ch) in cmd.chars().enumerate() {
-            render_state.set_cell(start_x + 1 + j, y, ch, fg, bg);
-        }
+//         for (j, ch) in cmd.chars().enumerate() {
+//             render_state.set_cell(start_x + 1 + j, y, ch, fg, bg);
+//         }
 
-        // fill rest with spaces if the line is shorter than popup_width
-        for x in (start_x + 1 + cmd.len())..(start_x + popup_width - 1) {
-            render_state.set_cell(x, y, ' ', fg, bg);
-        }
+//         // fill rest with spaces if the line is shorter than popup_width
+//         for x in (start_x + 1 + cmd.len())..(start_x + popup_width - 1) {
+//             render_state.set_cell(x, y, ' ', fg, bg);
+//         }
 
-        render_state.set_cell(start_x + popup_width - 1, y, '│', fg, bg);
-    }
+//         render_state.set_cell(start_x + popup_width - 1, y, '│', fg, bg);
+//     }
 
-    // Draw bottom line
-    let bottom_y = start_y + popup_height - 1;
-    render_state.set_cell(start_x, bottom_y, '└', fg, bg);
-    for x in (start_x + 1)..(start_x + popup_width - 1) {
-        render_state.set_cell(x, bottom_y, '─', fg, bg);
-    }
-    render_state.set_cell(start_x + popup_width - 1, bottom_y, '┘', fg, bg);
+//     // Draw bottom line
+//     let bottom_y = start_y + popup_height - 1;
+//     render_state.set_cell(start_x, bottom_y, '└', fg, bg);
+//     for x in (start_x + 1)..(start_x + popup_width - 1) {
+//         render_state.set_cell(x, bottom_y, '─', fg, bg);
+//     }
+//     render_state.set_cell(start_x + popup_width - 1, bottom_y, '┘', fg, bg);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
     let row = render_state.term_height as usize - 2;
@@ -507,10 +529,10 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
     }
 
     if editor.is_waiting_for_command() {
-        let help = editor.get_help_content();
+        let (title, help) = editor.get_help_content();
         //
         // handle error
-        let _ = draw_help_popup_to_buffer(render_state, help.unwrap());
+        let _ = menus::draw_help_popup_to_buffer(render_state, title.unwrap(), help.unwrap());
     }
 
     Ok(())
@@ -820,73 +842,3 @@ fn draw_content(
 
     Ok(())
 }
-
-// fn draw_status_line(
-//     editor: &Editor,
-//     render_state: &RenderState,
-//     stdout: &mut Stdout,
-// ) -> Result<()> {
-//     // Position at the bottom of the screen - 2
-//     stdout.queue(MoveTo(0, render_state.term_height - 2))?;
-//     stdout.queue(Clear(ClearType::CurrentLine))?;
-
-//     // Set background to white, text to black
-//     stdout.queue(SetBackgroundColor(Color::White))?;
-//     stdout.queue(SetForegroundColor(Color::Black))?;
-
-//     // Filename or [No Name]
-//     let filename = editor.get_file_name().unwrap_or("[No Name]");
-//     let modified_indicator = if editor.is_modified() { " [+] " } else { " " };
-
-//     // Mode indicator
-//     let mode = match editor.get_mode() {
-//         Mode::Normal => "NORMAL",
-//         Mode::Insert => "INSERT",
-//         Mode::Select => "SELECT",
-//     };
-
-//     // Get cursor position
-//     let (row, col) = editor.get_cursor_position();
-
-//     // Format the status line
-//     let left_status = format!("{}{} - {} ", filename, modified_indicator, mode);
-//     let right_status = format!(" Ln {}, Col {} ", row + 1, col + 1);
-
-//     let current_term_width = render_state.term_width as usize;
-//     // Calculate padding to right-align the position info
-//     let padding_width = current_term_width
-//         .saturating_sub(left_status.len())
-//         .saturating_sub(right_status.len());
-//     let padding = " ".repeat(padding_width);
-
-//     stdout.queue(Print(left_status))?;
-//     stdout.queue(Print(padding))?;
-//     stdout.queue(Print(right_status))?;
-//     stdout.queue(ResetColor)?;
-
-//     Ok(())
-// }
-
-// fn draw_message_line(
-//     editor: &Editor,
-//     render_state: &RenderState,
-//     stdout: &mut Stdout,
-// ) -> Result<()> {
-//     // Position at the bottom of the screen - 1
-//     stdout.queue(MoveTo(0, render_state.term_height - 1))?;
-//     stdout.queue(Clear(ClearType::CurrentLine))?;
-
-//     // You can add messages here (like "File saved" or error messages)
-//     // For now, you can show key bindings as a help message
-//     let help_msg = match editor.get_mode() {
-//         Mode::Normal => "^Q: Quit | i: Insert | v: Select | s: Save",
-//         Mode::Insert => "ESC: Normal mode | Arrow keys: Navigate",
-//         Mode::Select => "ESC: Normal mode | Arrow keys: Extend selection",
-//     };
-
-//     stdout.queue(SetForegroundColor(Color::DarkGrey))?;
-//     stdout.queue(Print(help_msg))?;
-//     stdout.queue(ResetColor)?;
-
-//     Ok(())
-// }

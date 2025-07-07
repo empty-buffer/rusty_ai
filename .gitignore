@@ -23,4 +23,5 @@ Cargo.lock
 #
 gitcommit
 .rusty/
+.backup/
 *.env

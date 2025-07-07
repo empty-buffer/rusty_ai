@@ -51,9 +51,9 @@ fn main() -> Result<()> {
 
     // Create an editor instance
     // let editor = Arc::new(Mutex::new(Editor::new()));
-    let mut editor = editor::Editor::new();
+    let mut editor = editor::Editor::new()?;
 
-    if let Err(e) = editor.open_file(".rusty/history.md") {
+    if let Err(e) = editor.open_file() {
         // Handle file opening error (you might want to show this to the user)
         eprintln!("Error opening file: {}", e);
     }

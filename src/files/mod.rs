@@ -4,13 +4,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::error::{Error, Result}; // use genai::Result;
+use crate::error::{Error, Result};
 
 // pub mod error;
 
 pub fn list_files() -> Result<Vec<String>> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(".")? {
+    for entry in fs::read_dir(".rusty/")? {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
