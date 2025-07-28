@@ -124,7 +124,7 @@ pub(super) fn draw_help_popup_to_buffer(
     };
 
     let fg = Color::White;
-    let bg = Some(Color::DarkGrey);
+    let bg = Some(render_state.theme.background);
 
     // Draw border: top line with title
     render_state.set_cell(start_x, start_y, '┌', fg, bg);

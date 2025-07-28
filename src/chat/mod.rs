@@ -93,9 +93,9 @@ impl ChatContext {
             Err(e) => return Err(crate::error::Error::Custom(e.to_string())),
         };
 
-        let ollama = Ollama::new("http://localhost".to_string(), 11434);
+        let ollama = Ollama::new(endpoint, 11434);
 
-        let response =  ollama.generate( GenerationRequest::new(model.into(), content)).await?;
+        let response =  ollama.generate(GenerationRequest::new(model.into(), content)).await?;
         Ok(response.response)
     }
 } 

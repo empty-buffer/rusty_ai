@@ -1,3 +1,4 @@
+mod colors;
 pub mod menus;
 
 use crate::editor::filepicker::Action;
@@ -23,6 +24,7 @@ pub struct WrappedLineInfo {
 }
 
 pub struct RenderState {
+    theme: colors::Theme,
     wrapped_lines_info: Vec<WrappedLineInfo>,
 
     scroll_offset: usize, // First line displayed (for scrolling)
@@ -36,7 +38,7 @@ pub struct RenderState {
     previous_content: String, // Stores the previously rendered content
     previous_cursor: (usize, usize), // Previous cursor position
     previous_mode: Mode,      // Previous editor mode
-    previous_request_stae: RequestState,
+    previous_request_state: RequestState,
     previous_modified: bool, // Previous modification state
 
     // Double buffering
@@ -47,13 +49,16 @@ pub struct RenderState {
 impl RenderState {
     pub fn new() -> Result<Self> {
         let (term_width, term_height) = size()?;
+        let theme = colors::Theme::default();
 
         // Create buffers with default values (space character with default colors)
-        let default_cell = (' ', Color::Reset, None);
-        let current_buffer = vec![vec![default_cell; term_width as usize]; term_height as usize];
-        let previous_buffer = vec![vec![default_cell; term_width as usize]; term_height as usize];
+        let current_buffer =
+            vec![vec![theme.default_cell(); term_width as usize]; term_height as usize];
+        let previous_buffer =
+            vec![vec![theme.default_cell(); term_width as usize]; term_height as usize];
 
         Ok(Self {
+            theme,
             wrapped_lines_info: Vec::new(),
             scroll_offset: 0,
             term_width,
@@ -63,7 +68,7 @@ impl RenderState {
             previous_content: String::new(),
             previous_cursor: (0, 0),
             previous_mode: Mode::Normal,
-            previous_request_stae: RequestState::Idle,
+            previous_request_state: RequestState::Idle,
             previous_modified: false,
             current_buffer,
             previous_buffer,
@@ -78,9 +83,10 @@ impl RenderState {
             self.term_height = height;
 
             // Resize buffers
-            let default_cell = (' ', Color::Reset, None);
-            self.current_buffer = vec![vec![default_cell; width as usize]; height as usize];
-            self.previous_buffer = vec![vec![default_cell; width as usize]; height as usize];
+            self.current_buffer =
+                vec![vec![self.theme.default_cell(); width as usize]; height as usize];
+            self.previous_buffer =
+                vec![vec![self.theme.default_cell(); width as usize]; height as usize];
 
             // Force full redraw
             self.previous_content = String::new();
@@ -118,16 +124,16 @@ impl RenderState {
 
     // Clear the current buffer (fill with spaces)
     fn clear_buffer(&mut self) {
-        let default_cell = (' ', Color::Reset, None);
         for row in &mut self.current_buffer {
             for cell in row {
-                *cell = default_cell;
+                *cell = self.theme.default_cell();
             }
         }
     }
 }
 
 pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
+    // editor.clamp_cursor_position();
     // Update terminal dimensions in case of resize
     render_state.update_dimensions()?;
 
@@ -137,6 +143,10 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
     // Get current editor state
     let content = editor.get_content();
     let (cursor_row, cursor_col) = editor.get_cursor_position();
+
+    // DEBUG
+    // eprintln!("Cursor row {}", cursor_row);
+
     let mode = editor.get_mode().clone();
     let request_state = editor.get_request_state().clone();
     let modified = editor.is_modified();
@@ -180,7 +190,7 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
     render_buffer_changes(render_state)?;
 
     // Position the cursor
-    let (cursor_row, cursor_col) = editor.get_cursor_position();
+    // let (cursor_row, cursor_col) = editor.get_cursor_position();
 
     let cursor_visual_line = render_state
         .wrapped_lines_info
@@ -190,8 +200,14 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
         .map(|wli| wli.screen_row);
 
     let visual_row = if let Some(screen_row) = cursor_visual_line {
+        // eprintln!("screen_row_before: screen_row={}", screen_row);
+
         if screen_row >= render_state.scroll_offset {
             screen_row - render_state.scroll_offset
+
+            // DEBUG
+            // eprintln!("screen_row_after: screen_row={}", screen_row);
+            // screen_row
         } else {
             0 // cursor above viewport; clamped to top
         }
@@ -199,16 +215,21 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
         0 // fallback
     };
 
-    let visual_col = cursor_col
-        - render_state
-            .wrapped_lines_info
-            .iter()
-            .filter(|wli| wli.logical_line == cursor_row && wli.start_col <= cursor_col)
-            .max_by_key(|wli| wli.start_col)
-            .map(|wli| wli.start_col)
-            .unwrap_or(0)
-        + render_state.line_number_width
-        + 1;
+    let logical_start_col = render_state
+        .wrapped_lines_info
+        .iter()
+        .filter(|wli| wli.logical_line == cursor_row && wli.start_col <= cursor_col)
+        .max_by_key(|wli| wli.start_col)
+        .map(|wli| wli.start_col)
+        .unwrap_or(0);
+
+    let line_content = editor.get_content();
+    let line = line_content.lines().nth(cursor_row).unwrap_or("");
+
+    let visual_col_offset =
+        logical_to_visual_col(line, cursor_col) - logical_to_visual_col(line, logical_start_col);
+
+    let visual_col = visual_col_offset + render_state.line_number_width + 1;
 
     let mut stdout = stdout();
     stdout.queue(MoveTo(visual_col as u16, visual_row as u16))?;
@@ -221,10 +242,26 @@ pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Resul
     render_state.previous_content = content;
     render_state.previous_cursor = (cursor_row, cursor_col);
     render_state.previous_mode = mode;
-    render_state.previous_request_stae = request_state;
+    render_state.previous_request_state = request_state;
     render_state.previous_modified = modified;
 
     Ok(())
+}
+
+/// logical_to_visual_col converts '\t' into 4 spaces
+fn logical_to_visual_col(line: &str, logical_col: usize) -> usize {
+    let mut visual_col = 0;
+    for (i, ch) in line.chars().enumerate() {
+        if i >= logical_col {
+            break;
+        }
+        if ch == '\t' {
+            visual_col += 4 - (visual_col % 4);
+        } else {
+            visual_col += 1;
+        }
+    }
+    visual_col
 }
 
 fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
@@ -289,8 +326,7 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
         .collect();
 
     // Now draw only the wrapped lines visible under scroll_offset
-
-    render_state.clear_buffer();
+    // render_state.clear_buffer();
 
     let viewport_start = render_state.scroll_offset;
     let viewport_end =
@@ -312,8 +348,8 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
                 x,
                 (screen_row - viewport_start) as usize,
                 ch,
-                Color::DarkGrey,
-                None,
+                render_state.theme.secondary_bacgroud,
+                Some(render_state.theme.background),
             );
         }
 
@@ -352,17 +388,21 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
                     editor.get_style_at(char_idx)
                 }
             };
+
             let (fg_color, bg_color) = match style {
-                Style::Normal => (Color::White, None),
-                Style::Keyword => (Color::Magenta, None),
-                Style::Function => (Color::Blue, None),
-                Style::Type => (Color::Cyan, None),
-                Style::String => (Color::Green, None),
-                Style::Number => (Color::Yellow, None),
-                Style::Comment => (Color::DarkGrey, None),
-                Style::Variable => (Color::White, None),
-                Style::Constant => (Color::Yellow, None),
-                Style::Operator => (Color::White, None),
+                Style::Normal => (
+                    render_state.theme.default_font,
+                    Some(render_state.theme.background),
+                ),
+                Style::Keyword => (Color::Magenta, Some(render_state.theme.background)),
+                Style::Function => (Color::Blue, Some(render_state.theme.background)),
+                Style::Type => (Color::Cyan, Some(render_state.theme.background)),
+                Style::String => (Color::Green, Some(render_state.theme.background)),
+                Style::Number => (Color::Yellow, Some(render_state.theme.background)),
+                Style::Comment => (Color::DarkGrey, Some(render_state.theme.background)),
+                Style::Variable => (Color::White, Some(render_state.theme.background)),
+                Style::Constant => (Color::Yellow, Some(render_state.theme.background)),
+                Style::Operator => (Color::White, Some(render_state.theme.background)),
                 Style::Selection => (Color::Black, Some(Color::Grey)),
                 Style::Error => (Color::Red, Some(Color::White)),
             };
@@ -403,7 +443,7 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
                 (screen_row - viewport_start) as usize,
                 ' ',
                 Color::Reset,
-                None,
+                Some(render_state.theme.background),
             );
             col += 1;
         }
@@ -412,72 +452,12 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
     // Clear leftover lines if any
     for row in (viewport_end - viewport_start)..viewport_height {
         for x in 0..render_state.term_width as usize {
-            render_state.set_cell(x, row as usize, ' ', Color::Reset, None);
+            render_state.set_cell(x, row as usize, ' ', Color::Reset, Some(Color::Black));
         }
     }
 
     Ok(())
 }
-
-// fn draw_help_popup_to_buffer(render_state: &mut RenderState, commands: Vec<String>) -> Result<()> {
-//     let max_line_length = commands.iter().map(|line| line.len()).max().unwrap_or(0);
-
-//     // Calculate popup box dimensions: width & height
-//     let popup_width = max_line_length + 4; // padding + borders
-//     let popup_height = commands.len() + 2; // commands + top & bottom border
-
-//     // Starting position - bottom right corner with some padding
-//     let term_width = render_state.term_width as usize;
-//     let term_height = render_state.term_height as usize;
-
-//     let start_x = if term_width > popup_width + 1 {
-//         term_width - popup_width - 1
-//     } else {
-//         0
-//     };
-//     let start_y = if term_height > popup_height + 1 {
-//         term_height - popup_height - 1
-//     } else {
-//         0
-//     };
-
-//     let fg = Color::White;
-//     let bg = Some(Color::DarkGrey);
-
-//     // Draw border: top line
-//     render_state.set_cell(start_x, start_y, '┌', fg, bg);
-//     for x in (start_x + 1)..(start_x + popup_width - 1) {
-//         render_state.set_cell(x, start_y, '─', fg, bg);
-//     }
-//     render_state.set_cell(start_x + popup_width - 1, start_y, '┐', fg, bg);
-
-//     // Draw middle lines (with sides)
-//     for (i, cmd) in commands.iter().enumerate() {
-//         let y = start_y + 1 + i;
-//         render_state.set_cell(start_x, y, '│', fg, bg);
-
-//         for (j, ch) in cmd.chars().enumerate() {
-//             render_state.set_cell(start_x + 1 + j, y, ch, fg, bg);
-//         }
-
-//         // fill rest with spaces if the line is shorter than popup_width
-//         for x in (start_x + 1 + cmd.len())..(start_x + popup_width - 1) {
-//             render_state.set_cell(x, y, ' ', fg, bg);
-//         }
-
-//         render_state.set_cell(start_x + popup_width - 1, y, '│', fg, bg);
-//     }
-
-//     // Draw bottom line
-//     let bottom_y = start_y + popup_height - 1;
-//     render_state.set_cell(start_x, bottom_y, '└', fg, bg);
-//     for x in (start_x + 1)..(start_x + popup_width - 1) {
-//         render_state.set_cell(x, bottom_y, '─', fg, bg);
-//     }
-//     render_state.set_cell(start_x + popup_width - 1, bottom_y, '┘', fg, bg);
-
-//     Ok(())
-// }
 
 fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -> Result<()> {
     let row = render_state.term_height as usize - 2;
@@ -520,12 +500,24 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
         if x >= render_state.term_width as usize {
             break;
         }
-        render_state.set_cell(x, row, ch, Color::Black, Some(Color::White));
+        render_state.set_cell(
+            x,
+            row,
+            ch,
+            Color::Black,
+            Some(render_state.theme.secondary_bacgroud),
+        );
     }
 
     // Fill any remaining space
     for x in status_line.len()..render_state.term_width as usize {
-        render_state.set_cell(x, row, ' ', Color::Black, Some(Color::White));
+        render_state.set_cell(
+            x,
+            row,
+            ' ',
+            Color::Black,
+            Some(render_state.theme.secondary_bacgroud),
+        );
     }
 
     if editor.is_waiting_for_command() {
@@ -682,20 +674,18 @@ fn render_buffer_changes(render_state: &mut RenderState) -> Result<()> {
 
 fn adjust_scroll(editor: &Editor, render_state: &mut RenderState) {
     let (cursor_row, cursor_col) = editor.get_cursor_position();
-    let viewport_height = render_state.term_height as usize - 2; // Space for status/message lines
+    let viewport_height = render_state.term_height.saturating_sub(2) as usize;
+    let wrapped_len = render_state.wrapped_lines_info.len();
 
-    // Find which visual line contains the cursor position
-    // Find the visual line containing the cursor:
+    if wrapped_len == 0 || viewport_height == 0 {
+        render_state.scroll_offset = 0;
+        return;
+    }
+
     let mut cursor_visual_line: Option<&WrappedLineInfo> = None;
 
     for wli in &render_state.wrapped_lines_info {
-        if wli.logical_line == cursor_row && wli.start_col <= cursor_col && {
-            // Next wrapped line start_col (for same logical line) must be > cursor_col or no next wrap
-            true
-        } {
-            // To pick correct chunk, remember the max start_col ≤ cursor_col for logical_line
-            // We'll iterate all below, then take max start_col ≤ cursor_col
-
+        if wli.logical_line == cursor_row && wli.start_col <= cursor_col {
             if let Some(current) = cursor_visual_line {
                 if wli.start_col > current.start_col {
                     cursor_visual_line = Some(wli);
@@ -706,28 +696,107 @@ fn adjust_scroll(editor: &Editor, render_state: &mut RenderState) {
         }
     }
 
-    let cursor_visual_line = match cursor_visual_line {
-        Some(wli) => wli.screen_row,
-        None => 0, // fallback if not found
-    };
-
-    // Now scroll_offset is visual line index, adjust it to keep cursor visible
+    let cursor_visual_line = cursor_visual_line
+        .map(|wli| wli.screen_row)
+        .unwrap_or_else(|| render_state.wrapped_lines_info[wrapped_len - 1].screen_row);
 
     if cursor_visual_line < render_state.scroll_offset {
         render_state.scroll_offset = cursor_visual_line;
     } else if cursor_visual_line >= render_state.scroll_offset + viewport_height {
-        render_state.scroll_offset = cursor_visual_line - viewport_height + 1;
+        if viewport_height > cursor_visual_line {
+            render_state.scroll_offset = 0;
+        } else {
+            render_state.scroll_offset = cursor_visual_line
+                .saturating_sub(viewport_height)
+                .saturating_add(1);
+        }
     }
 
-    // Clamp scroll_offset not to exceed max visual lines
-    let max_scroll = render_state
-        .wrapped_lines_info
-        .len()
-        .saturating_sub(viewport_height);
+    let max_scroll = wrapped_len.saturating_sub(viewport_height);
+
+    // DEBUG
+
+    // eprintln!(
+    //     "adjust_scroll: cursor_row={}, cursor_col={}, cursor_visual_line={}, scroll_offset={}, viewport_height={}, max_scroll={}",
+    //     cursor_row, cursor_col, cursor_visual_line, render_state.scroll_offset, viewport_height, max_scroll
+    // );
+
     if render_state.scroll_offset > max_scroll {
         render_state.scroll_offset = max_scroll;
     }
 }
+
+// fn adjust_scroll(editor: &Editor, render_state: &mut RenderState) {
+//     if render_state.wrapped_lines_info.is_empty() {
+//         render_state.scroll_offset = 0;
+//         return;
+//     }
+
+//     let (cursor_row, cursor_col) = editor.get_cursor_position();
+//     let viewport_height = render_state.term_height as usize - 2; // Space for status/message lines
+
+//     // Find which visual line contains the cursor position
+//     // Find the visual line containing the cursor:
+//     let mut cursor_visual_line: Option<&WrappedLineInfo> = None;
+
+//     for wli in &render_state.wrapped_lines_info {
+//         if wli.logical_line == cursor_row && wli.start_col <= cursor_col && {
+//             // Next wrapped line start_col (for same logical line) must be > cursor_col or no next wrap
+//             true
+//         } {
+//             // To pick correct chunk, remember the max start_col ≤ cursor_col for logical_line
+//             // We'll iterate all below, then take max start_col ≤ cursor_col
+
+//             if let Some(current) = cursor_visual_line {
+//                 if wli.start_col > current.start_col {
+//                     cursor_visual_line = Some(wli);
+//                 }
+//             } else {
+//                 cursor_visual_line = Some(wli);
+//             }
+//         }
+//     }
+
+//     let cursor_visual_line = match cursor_visual_line {
+//         Some(wli) => wli.screen_row,
+//         None => {
+//             // If not found, fallback to closest visual row in buffer
+//             if let Some(last_wli) = render_state.wrapped_lines_info.last() {
+//                 last_wli.screen_row
+//             } else {
+//                 0
+//             }
+//         }
+//     };
+
+//     // eprintln!(
+//     //     "move_cursor_down: before: cursor_visual_line={}",
+//     //     cursor_visual_line
+//     // );
+
+//     // Fix to not underflow when subtracting viewport height:
+//     if cursor_visual_line < render_state.scroll_offset {
+//         render_state.scroll_offset = cursor_visual_line;
+//     } else if cursor_visual_line >= render_state.scroll_offset + viewport_height {
+//         // Ensure we don't underflow when subtracting
+//         if viewport_height > cursor_visual_line {
+//             render_state.scroll_offset = 0;
+//         } else {
+//             render_state.scroll_offset = cursor_visual_line
+//                 .saturating_sub(viewport_height)
+//                 .saturating_add(1);
+//         }
+//     }
+
+//     // Clamp scroll_offset within valid bounds:
+//     let max_scroll = render_state
+//         .wrapped_lines_info
+//         .len()
+//         .saturating_sub(viewport_height);
+//     if render_state.scroll_offset > max_scroll {
+//         render_state.scroll_offset = max_scroll;
+//     }
+// }
 
 fn draw_content(
     editor: &mut Editor,

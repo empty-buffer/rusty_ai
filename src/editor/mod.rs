@@ -2,6 +2,8 @@ use crate::error::{Error, Result};
 
 pub mod filepicker;
 pub mod menu;
+mod movements;
+mod operation;
 
 use menu::MenuType;
 
@@ -9,6 +11,7 @@ use once_cell::sync::Lazy;
 use ropey::Rope;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::terminal::size;
 
 use crate::chat::{history::History, ChatContext, Model};
 
@@ -36,6 +39,8 @@ pub struct Editor {
     cursor_row: usize,
     cursor_col: usize,
     mode: Mode,
+    undo_stack: Vec<Rope>,
+    redo_stack: Vec<Rope>,
 
     history: History,
     modified: bool,
@@ -90,10 +95,13 @@ impl Editor {
         let mut buffer = Rope::new();
         buffer.insert(0, "\n");
         Ok(Self {
-            buffer,
+            buffer: Rope::from(current_file.current_file_content()?),
             cursor_row: 0,
             cursor_col: 0,
             mode: Mode::Normal,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+
             history: current_file,
             modified: false,
 
@@ -173,7 +181,7 @@ impl Editor {
         }
 
         if let Some(highlighter) = &self.syntax_highlighter {
-            let language = highlighter.detect_language(&self.history.file_path);
+            let language = highlighter.detect_language(&self.history.file);
             // .as_ref()
             // .and_then(|path| highlighter.detect_language(path));
 
@@ -190,7 +198,7 @@ impl Editor {
         //     None => return Err(Error::Custom("editor: can't find file".to_string())),
         // };
 
-        let content = fs::read_to_string(&self.history.file_path)?;
+        let content = fs::read_to_string(&self.history.file)?;
         self.buffer = Rope::from_str(&content);
         // self.file_path = Some(file.to_string());
         self.cursor_row = 0;
@@ -580,6 +588,14 @@ impl Editor {
             }
         }
 
+        if modifiers == KeyModifiers::CONTROL {
+            match key {
+                KeyCode::Char('u') => return self.page_up(),
+                KeyCode::Char('d') => return self.page_down(),
+                _ => {}
+            }
+        }
+
         if self.menu_status.file_picker_state(filepicker::Action::Save) {
             match key {
                 KeyCode::Char(c) => {
@@ -660,7 +676,7 @@ impl Editor {
                         self.modified = false;
 
                         // Update file path in history or state if relevant
-                        self.history.file_path = selected_file.to_string();
+                        self.history.file = selected_file.to_string();
 
                         // Update syntax highlighting
                         self.update_syntax_highlighting();
@@ -735,17 +751,19 @@ impl Editor {
 
                 KeyCode::Char('s') => {
                     self.save_file()?;
+
                     return Ok(false);
                 }
 
                 KeyCode::Char('S') => {
                     self.menu_status.file_picker.init_file_save_as();
+
                     return Ok(false);
                 }
 
                 KeyCode::Char('l') => {
-                    // self.menu_status.set_active_menu(MenuType::FilePicker);
                     self.menu_status.file_picker.init_file_picker()?;
+
                     return Ok(false);
                 }
 
@@ -802,6 +820,15 @@ impl Editor {
             KeyCode::Char('j') => self.move_cursor_down(),
             KeyCode::Char('h') => self.move_cursor_left(),
             KeyCode::Char('l') => self.move_cursor_right(),
+
+            KeyCode::Char('u') => {
+                self.undo()?;
+                return Ok(false);
+            }
+            KeyCode::Char('U') => {
+                self.redo()?;
+                return Ok(false);
+            }
 
             // Mode switching
             KeyCode::Char('i') => {
@@ -871,6 +898,8 @@ impl Editor {
                 self.delete_char_at_cursor()?;
                 Ok(false)
             }
+
+            KeyCode::Tab => self.tab_cursor(),
             KeyCode::Up => self.move_cursor_up(),
             KeyCode::Down => self.move_cursor_down(),
             KeyCode::Left => self.move_cursor_left(),
@@ -883,6 +912,14 @@ impl Editor {
     }
 
     fn handle_select_mode(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        if modifiers == KeyModifiers::CONTROL {
+            match key {
+                KeyCode::Char('u') => return self.page_up(),
+                KeyCode::Char('d') => return self.page_down(),
+                _ => {}
+            }
+        }
+
         if self.menu_status.is_active(MenuType::GoTo) {
             self.menu_status.reset();
 
@@ -961,9 +998,14 @@ impl Editor {
 
     fn move_cursor_down(&mut self) -> Result<bool> {
         // Get the actual number of lines in the buffer
-        let total_lines = self.buffer.len_lines();
+        let total_lines = self.buffer.len_lines() - 1;
 
         let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
+
+        // eprintln!(
+        //     "move_cursor_down: before: row={}, col={}, total_line={}",
+        //     self.cursor_row, self.cursor_col, total_lines
+        // );
 
         // Only move down if we're not already at the last line
         if self.cursor_row < last_line_index {
@@ -982,7 +1024,81 @@ impl Editor {
             }
         }
 
+        // eprintln!(
+        //     "move_cursor_down: before: row={}, col={}, total_line={}",
+        //     self.cursor_row, self.cursor_col, total_lines
+        // );
+
         Ok(false)
+    }
+
+    fn page_up(&mut self) -> Result<bool> {
+        let page_size = self.get_page_size();
+
+        if self.cursor_row < page_size {
+            self.cursor_row = 0;
+        } else {
+            self.cursor_row -= page_size;
+        }
+
+        let line_len = self
+            .buffer
+            .line(self.cursor_row)
+            .len_chars()
+            .saturating_sub(1);
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+        }
+
+        Ok(false)
+    }
+
+    fn page_down(&mut self) -> Result<bool> {
+        let page_size = self.get_page_size();
+        let total_lines = self.buffer.len_lines() - 1;
+
+        // eprintln!(
+        //     "move_cursor_down: before: row={}, col={}, total_line={}",
+        //     self.cursor_row, self.cursor_col, total_lines
+        // );
+
+        if self.cursor_row + page_size >= total_lines {
+            self.cursor_row = total_lines.saturating_sub(1);
+        } else {
+            self.cursor_row += page_size;
+        }
+
+        let line_len = self
+            .buffer
+            .line(self.cursor_row)
+            .len_chars()
+            .saturating_sub(1);
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+        }
+
+        // eprintln!(
+        //     "move_cursor_down: before: row={}, col={}, total_line={}",
+        //     self.cursor_row, self.cursor_col, total_lines
+        // );
+
+        Ok(false)
+    }
+
+    fn get_page_size(&self) -> usize {
+        // Try to get terminal height
+        if let Ok((_cols, rows)) = size() {
+            let rows = rows as usize;
+            if rows < 50 {
+                10
+            } else {
+                // Move by one-third of screen height (floor)
+                rows / 3.max(1)
+            }
+        } else {
+            // Default fallback
+            10
+        }
     }
 
     fn move_cursor_left(&mut self) -> Result<bool> {
@@ -1000,46 +1116,69 @@ impl Editor {
     fn move_cursor_right(&mut self) -> Result<bool> {
         let current_line = self.buffer.line(self.cursor_row);
 
-        let mut line_len: usize;
-
-        if self.mode == Mode::Insert {
-            line_len = current_line.len_chars();
+        let line_len = if self.mode == Mode::Insert {
+            current_line.len_chars()
         } else {
-            line_len = current_line.len_chars().saturating_sub(1); // Account for newline
-        }
+            current_line.len_chars().saturating_sub(1)
+        };
 
-        if self.cursor_col < line_len {
+        // eprintln!(
+        //     "move_cursor_right: before: row={}, col={}, line_len={}",
+        //     self.cursor_row, self.cursor_col, line_len
+        // );
+
+        let total_lines = self.buffer.len_lines().saturating_sub(1);
+
+        let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
+
+        if self.cursor_col + 1 < line_len {
             self.cursor_col += 1;
-        } else if self.cursor_row < self.buffer.len_lines().saturating_sub(1) {
-            // Move to beginning of next line
-            let total_lines = self.buffer.len_lines();
-
-            let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
-
-            if self.cursor_row < last_line_index {
-                self.cursor_row += 1;
-                self.cursor_col = 0;
-
-                // Make sure cursor doesn't go beyond end of line
-                let line = self.buffer.line(self.cursor_row);
-                let line_len = if line.len_chars() > 0 {
-                    line.len_chars() - 1 // Account for newline
-                } else {
-                    0 // Handle empty lines
-                };
-
-                if self.cursor_col > line_len {
-                    self.cursor_col = line_len;
-                }
-            }
-
-            // self.cursor_row += 1;
-            // self.cursor_col = 0;
+        } else if self.cursor_col + 1 == line_len {
+            // Move onto last position allowed on line
+            self.cursor_col += 1;
+        } else if self.cursor_row < last_line_index {
+            // Move to next line start
+            self.cursor_row += 1;
+            let next_line = self.buffer.line(self.cursor_row);
+            let next_line_len = if self.mode == Mode::Insert {
+                next_line.len_chars()
+            } else {
+                next_line.len_chars().saturating_sub(1)
+            };
+            self.cursor_col = 0;
         }
+
+        // Clamp cursor_col to line_len max just in case
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+        }
+
+        // eprintln!(
+        //     "move_cursor_right: after: row={}, col={}, line_len={}",
+        //     self.cursor_row, self.cursor_col, line_len
+        // );
+
         Ok(false)
     }
 
+    fn tab_cursor(&mut self) -> Result<bool> {
+        if self.mode == Mode::Insert {
+            let char_idx = self.get_char_idx();
+            self.buffer.insert_char(char_idx, '\t');
+            self.cursor_col += 1;
+            self.modified = true;
+
+            self.invalidate_syntax_at_line(self.cursor_row);
+
+            Ok(false)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn insert_char(&mut self, c: char) -> Result<()> {
+        self.push_undo_state();
+
         let char_idx = self.get_char_idx();
         self.buffer.insert_char(char_idx, c);
         self.cursor_col += 1;
@@ -1051,6 +1190,8 @@ impl Editor {
     }
 
     fn insert_newline(&mut self) -> Result<()> {
+        self.push_undo_state();
+
         let char_idx = self.get_char_idx();
 
         self.buffer.insert_char(char_idx, '\n');
@@ -1065,14 +1206,19 @@ impl Editor {
     }
 
     fn delete_char_before_cursor(&mut self) -> Result<()> {
-        let char_idx = self.get_char_idx();
-        if char_idx > 0 {
-            // Get the current line before deletion
-            let current_line = self.cursor_row;
+        self.push_undo_state();
 
+        let char_idx = self.get_char_idx();
+        if char_idx == 0 {
+            return Ok(());
+        }
+
+        let prev_char = self.buffer.slice(char_idx - 1..char_idx).to_string();
+
+        if prev_char == "\t" {
+            // Delete the single tab character
             self.buffer.remove(char_idx - 1..char_idx);
 
-            // Update cursor position
             if self.cursor_col > 0 {
                 self.cursor_col -= 1;
             } else if self.cursor_row > 0 {
@@ -1082,14 +1228,33 @@ impl Editor {
             }
 
             self.modified = true;
-
-            // Invalidate syntax highlighting for affected lines
-            self.invalidate_syntax_at_line(current_line.saturating_sub(1));
+            self.invalidate_syntax_at_line(self.cursor_row);
+            return Ok(());
         }
+
+        // Otherwise normal deletion of one char before cursor
+        let current_line = self.cursor_row;
+
+        self.buffer.remove(char_idx - 1..char_idx);
+
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        } else if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            let line = self.buffer.line(self.cursor_row);
+            self.cursor_col = line.len_chars();
+        }
+
+        self.modified = true;
+
+        self.invalidate_syntax_at_line(current_line.saturating_sub(1));
+
         Ok(())
     }
 
     fn delete_char_at_cursor(&mut self) -> Result<()> {
+        self.push_undo_state();
+
         let char_idx = self.get_char_idx();
         if char_idx < self.buffer.len_chars() {
             let current_line = self.cursor_row;
@@ -1132,22 +1297,9 @@ impl Editor {
         char_idx
     }
 
-    // Helper methods
-    // fn get_char_idx(&self) -> usize {
-    //     let mut char_idx = 0;
-
-    //     // Add up all characters in preceding lines
-    //     for i in 0..self.cursor_row {
-    //         char_idx += self.buffer.line(i).len_chars();
-    //     }
-
-    //     // Add column position
-    //     char_idx += self.cursor_col;
-
-    //     char_idx
-    // }
-
     fn delete_selection(&mut self) -> Result<()> {
+        self.push_undo_state();
+
         if let Some(selection_range) = self.get_selection_range() {
             let start_idx = selection_range.start;
             let end_idx = selection_range.end;
@@ -1222,19 +1374,17 @@ impl Editor {
         &self.mode
     }
 
-    // pub fn get_request_state(&self) -> &RequestState {
-    //     &self.request_state
-    // }
-
     pub fn is_modified(&self) -> bool {
         self.modified
     }
 
     pub fn get_file_name(&self) -> Option<&str> {
-        Some(self.history.file_path.as_str())
+        Some(self.history.file.as_str())
     }
 
     fn paste_from_clipboard(&mut self) -> Result<()> {
+        self.push_undo_state();
+
         // Create a clipboard context
         let mut ctx: ClipboardContext = ClipboardProvider::new()
             .map_err(|e| format!("Failed to create clipboard context: {}", e))?;
@@ -1300,6 +1450,72 @@ impl Editor {
 
         if self.cursor_col > line_len {
             self.cursor_col = line_len;
+        }
+    }
+
+    fn push_undo_state(&mut self) {
+        // Save current buffer state for undo
+        self.undo_stack.push(self.buffer.clone());
+        // Clear redo stack because new changes invalidate redo history
+        self.redo_stack.clear();
+    }
+
+    pub fn undo(&mut self) -> Result<()> {
+        if let Some(prev_state) = self.undo_stack.pop() {
+            // Save current state for redo
+            self.redo_stack.push(self.buffer.clone());
+
+            // Revert buffer
+            self.buffer = prev_state;
+
+            // Update cursor position to start or safe position
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+
+            self.modified = true;
+
+            // Invalidate syntax cache for full refresh
+            self.syntax_cache.mark_all_dirty();
+            self.update_syntax_highlighting();
+        }
+        Ok(())
+    }
+
+    pub fn redo(&mut self) -> Result<()> {
+        if let Some(next_state) = self.redo_stack.pop() {
+            // Save current state for undo
+            self.undo_stack.push(self.buffer.clone());
+
+            // Apply redo buffer
+            self.buffer = next_state;
+
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+
+            self.modified = true;
+
+            self.syntax_cache.mark_all_dirty();
+            self.update_syntax_highlighting();
+        }
+        Ok(())
+    }
+
+    pub fn clamp_cursor_position(&mut self) {
+        let total_lines = self.buffer.len_lines();
+        if total_lines == 0 {
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+            return;
+        }
+
+        if self.cursor_row >= total_lines {
+            self.cursor_row = total_lines.saturating_sub(1);
+        }
+
+        let line_len = self.buffer.line(self.cursor_row).len_chars();
+
+        if self.cursor_col >= line_len {
+            self.cursor_col = line_len.saturating_sub(1);
         }
     }
 }

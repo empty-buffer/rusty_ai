@@ -7,7 +7,7 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct History {
     pub root: String,
-    pub file_path: String,
+    pub file: String,
 }
 
 impl History {
@@ -34,7 +34,7 @@ impl History {
             .open(&file_path)?;
         Ok(Self {
             root: history_dir.to_owned(),
-            file_path,
+            file: filename,
         })
     }
 
@@ -46,13 +46,15 @@ impl History {
             .write(true)
             .open(&file_path)?;
 
-        self.file_path = name;
+        self.file = name;
 
         Ok(())
     }
 
     pub fn save_file(&mut self, content: String) -> Result<()> {
-        fs::write(&self.file_path, content)?;
+        let file_path = format!("{}/{}", self.root, self.file);
+
+        fs::write(file_path, content)?;
 
         Ok(())
     }
@@ -67,13 +69,13 @@ impl History {
 
         fs::write(file_path, content)?;
 
-        self.file_path = file_name;
+        self.file = file_name;
 
         Ok(())
     }
 
     pub fn current_file_content(&self) -> Result<String> {
-        let current_path = format!("{}/{}", self.root, self.file_path);
+        let current_path = format!("{}/{}", self.root, self.file);
 
         let mut file = OpenOptions::new().read(true).open(&current_path)?;
 
@@ -90,7 +92,7 @@ impl History {
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
 
-        self.file_path = file_path;
+        self.file = file_path;
 
         Ok(contents)
     }
