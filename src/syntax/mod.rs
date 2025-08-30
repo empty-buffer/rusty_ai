@@ -1,13 +1,14 @@
 use crate::error::Result;
 use regex::Regex;
 use ropey::Rope;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::{cell::RefCell, fs::OpenOptions};
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use tree_sitter_language::LanguageFn;
 
+use std::io::Write;
 pub mod cache;
 
 struct CodeBlock {
@@ -22,7 +23,10 @@ pub enum Style {
     Normal,
     Keyword,
     Function,
+    Constructor,
+    Property,
     Type,
+    Builtin,
     String,
     Number,
     Comment,
@@ -142,6 +146,12 @@ impl SyntaxHighlighter {
     ) -> Vec<(Range<usize>, Style)> {
         let text = buffer.to_string();
 
+        let mut log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("log.txt")
+            .expect("Failed to open log file");
+
         // For Markdown, extract all code blocks with language and positions
         let code_blocks = self.extract_code_blocks(&text);
 
@@ -175,8 +185,14 @@ impl SyntaxHighlighter {
 
                                 let style = match query.capture_names()[capture.index as usize] {
                                     "keyword" => Style::Keyword,
-                                    "function" | "function.macro" => Style::Function,
+                                    "function" | "function.macro" | "function.method" => {
+                                        Style::Function
+                                    }
+                                    "punctuation.delimiter" | "punctuation.bracket" => {
+                                        Style::Normal
+                                    }
                                     "type" => Style::Type,
+                                    "type.builtin" | "constant.builtin" => Style::Builtin,
                                     "string" => Style::String,
                                     "number" => Style::Number,
                                     "comment" => Style::Comment,
@@ -185,9 +201,16 @@ impl SyntaxHighlighter {
                                     }
                                     "constant" => Style::Constant,
                                     "operator" => Style::Operator,
-                                    _ => Style::Normal,
-                                };
 
+                                    "constructor" => Style::Constructor,
+                                    "property" => Style::Property,
+                                    "variable.parameter" => Style::Normal,
+                                    other => {
+                                        writeln!(log_file, "Normal ({})", other)
+                                            .expect("Failed to write to log file");
+                                        Style::Normal
+                                    }
+                                };
                                 // Shift ranges by code block start offset
                                 let adjusted_range =
                                     (range.start + block.start)..(range.end + block.start);

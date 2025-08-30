@@ -348,7 +348,7 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
                 x,
                 (screen_row - viewport_start) as usize,
                 ch,
-                render_state.theme.secondary_bacgroud,
+                render_state.theme.secondary_background,
                 Some(render_state.theme.background),
             );
         }
@@ -390,19 +390,19 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
             };
 
             let (fg_color, bg_color) = match style {
-                Style::Normal => (
-                    render_state.theme.default_font,
-                    Some(render_state.theme.background),
-                ),
-                Style::Keyword => (Color::Magenta, Some(render_state.theme.background)),
-                Style::Function => (Color::Blue, Some(render_state.theme.background)),
-                Style::Type => (Color::Cyan, Some(render_state.theme.background)),
-                Style::String => (Color::Green, Some(render_state.theme.background)),
+                Style::Normal => (render_state.theme.default_style()),
+                Style::Keyword => (render_state.theme.keyword_style()),
+                Style::Function => (render_state.theme.function_style()),
+                Style::Type => (render_state.theme.type_style()),
+                Style::Builtin => (render_state.theme.type_builtin_style()),
+                Style::String => (render_state.theme.string_style()),
+                Style::Constructor => (render_state.theme.constructor_style()),
+                Style::Property => (render_state.theme.property_style()),
                 Style::Number => (Color::Yellow, Some(render_state.theme.background)),
                 Style::Comment => (Color::DarkGrey, Some(render_state.theme.background)),
-                Style::Variable => (Color::White, Some(render_state.theme.background)),
+                Style::Variable => (render_state.theme.variable_style()),
                 Style::Constant => (Color::Yellow, Some(render_state.theme.background)),
-                Style::Operator => (Color::White, Some(render_state.theme.background)),
+                Style::Operator => (render_state.theme.variable_style()),
                 Style::Selection => (Color::Black, Some(Color::Grey)),
                 Style::Error => (Color::Red, Some(Color::White)),
             };
@@ -452,7 +452,13 @@ fn draw_content_to_buffer(editor: &mut Editor, render_state: &mut RenderState) -
     // Clear leftover lines if any
     for row in (viewport_end - viewport_start)..viewport_height {
         for x in 0..render_state.term_width as usize {
-            render_state.set_cell(x, row as usize, ' ', Color::Reset, Some(Color::Black));
+            render_state.set_cell(
+                x,
+                row as usize,
+                ' ',
+                Color::Reset,
+                Some(render_state.theme.background),
+            );
         }
     }
 
@@ -505,7 +511,7 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
             row,
             ch,
             Color::Black,
-            Some(render_state.theme.secondary_bacgroud),
+            Some(render_state.theme.secondary_background),
         );
     }
 
@@ -516,7 +522,7 @@ fn draw_status_line_to_buffer(editor: &Editor, render_state: &mut RenderState) -
             row,
             ' ',
             Color::Black,
-            Some(render_state.theme.secondary_bacgroud),
+            Some(render_state.theme.secondary_background),
         );
     }
 
@@ -863,9 +869,12 @@ fn draw_content(
                 Style::Keyword => (Color::Magenta, None),
                 Style::Function => (Color::Blue, None),
                 Style::Type => (Color::Cyan, None),
+                Style::Builtin => (Color::Cyan, None),
                 Style::String => (Color::Green, None),
                 Style::Number => (Color::Yellow, None),
                 Style::Comment => (Color::DarkGrey, None),
+                Style::Constructor => (Color::Magenta, None),
+                Style::Property => (Color::Magenta, None),
                 Style::Variable => (Color::White, None),
                 Style::Constant => (Color::Yellow, None),
                 Style::Operator => (Color::White, None),
