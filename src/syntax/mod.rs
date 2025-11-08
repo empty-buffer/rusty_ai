@@ -221,7 +221,6 @@ impl SyntaxHighlighter {
                     }
                 }
             }
-            // else maybe treat as normal text
         }
 
         // Add highlighting for Markdown syntax outside code blocks

@@ -182,8 +182,6 @@ impl Editor {
 
         if let Some(highlighter) = &self.syntax_highlighter {
             let language = highlighter.detect_language(&self.history.file);
-            // .as_ref()
-            // .and_then(|path| highlighter.detect_language(path));
 
             // Only perform full highlighting when necessary
             let highlights = highlighter.highlight_buffer(&self.buffer, language);
@@ -607,11 +605,15 @@ impl Editor {
                 KeyCode::Backspace => {
                     self.menu_status.file_picker.delete_previous_char();
 
+                    // Update syntax highlighting
+                    self.update_syntax_highlighting();
                     return Ok(false);
                 }
                 KeyCode::Delete => {
                     self.menu_status.file_picker.delete_current_char();
 
+                    // Update syntax highlighting
+                    self.update_syntax_highlighting();
                     return Ok(false);
                 }
                 KeyCode::Left => {
@@ -1000,7 +1002,7 @@ impl Editor {
         // Get the actual number of lines in the buffer
         let total_lines = self.buffer.len_lines() - 1;
 
-        let last_line_index = if total_lines > 0 { total_lines - 1 } else { 0 };
+        let last_line_index = if total_lines > 0 { total_lines } else { 0 };
 
         // eprintln!(
         //     "move_cursor_down: before: row={}, col={}, total_line={}",
@@ -1170,6 +1172,8 @@ impl Editor {
 
             self.invalidate_syntax_at_line(self.cursor_row);
 
+            self.update_syntax_highlighting();
+
             Ok(false)
         } else {
             Ok(false)
@@ -1186,6 +1190,8 @@ impl Editor {
 
         self.invalidate_syntax_at_line(self.cursor_row);
 
+        self.update_syntax_highlighting();
+
         Ok(())
     }
 
@@ -1201,6 +1207,8 @@ impl Editor {
         self.modified = true;
 
         self.invalidate_syntax_at_line(self.cursor_row - 1);
+
+        self.update_syntax_highlighting();
 
         Ok(())
     }
@@ -1228,7 +1236,11 @@ impl Editor {
             }
 
             self.modified = true;
+
             self.invalidate_syntax_at_line(self.cursor_row);
+
+            self.update_syntax_highlighting();
+
             return Ok(());
         }
 
@@ -1248,6 +1260,8 @@ impl Editor {
         self.modified = true;
 
         self.invalidate_syntax_at_line(current_line.saturating_sub(1));
+
+        self.update_syntax_highlighting();
 
         Ok(())
     }
@@ -1284,6 +1298,9 @@ impl Editor {
             // Invalidate syntax highlighting
             self.invalidate_syntax_at_line(current_line);
         }
+
+        self.update_syntax_highlighting();
+
         Ok(())
     }
 

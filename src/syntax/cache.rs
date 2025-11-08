@@ -34,18 +34,13 @@ impl SyntaxCache {
         self.dirty_lines.clear();
     }
 
-    // pub fn get_cached_style(&self, line_number: usize, char_index: usize) -> Option<Style> {
-    //     self.line_styles
-    //         .get(&line_number)
-    //         .and_then(|styles| styles.get(char_index).cloned())
-    // }
-
     pub fn get_cached_style(&self, line_number: usize, col: usize) -> Option<Style> {
         self.line_styles.get(&line_number).and_then(|styles| {
             if col < styles.len() {
                 Some(styles[col])
             } else {
-                None
+                // FIXME Was changed to find fix for markdown color bag
+                Some(Style::Normal)
             }
         })
     }

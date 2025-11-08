@@ -119,11 +119,5 @@ impl Default for Theme {
     }
 }
 
-// fn test() -> Option<i32> {
-//     let bool = false;
-
-//     !todo!()
-// }
-
 // static GREETING: &str = "Hello, wo1rld!";
 // const GREETING1: &str = "Hello, world!";

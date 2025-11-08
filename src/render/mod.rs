@@ -99,8 +99,6 @@ impl RenderState {
 }
 
 impl RenderState {
-    // Additional methods
-
     // Set a character with style in the current buffer
     fn set_cell(&mut self, x: usize, y: usize, ch: char, fg: Color, bg: Option<Color>) {
         if y < self.term_height as usize && x < self.term_width as usize {
@@ -133,7 +131,6 @@ impl RenderState {
 }
 
 pub fn draw_screen(editor: &mut Editor, render_state: &mut RenderState) -> Result<()> {
-    // editor.clamp_cursor_position();
     // Update terminal dimensions in case of resize
     render_state.update_dimensions()?;
 

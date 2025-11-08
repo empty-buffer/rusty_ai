@@ -58,6 +58,8 @@ fn main() -> Result<()> {
         eprintln!("Error opening file: {}", e);
     }
 
+    editor.update_syntax_highlighting();
+
     // Run editor
     let mut render_state = render::RenderState::new()?;
 
